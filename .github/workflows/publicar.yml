@@ -60,6 +60,7 @@ jobs:
           artifact-configuration-slug: programa
           github-artifact-id: ${{ steps.programa.outputs.artifact-id }}
           wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600   # tiempo para aprobar la firma en SignPath
           output-artifact-directory: dist/BackupApp
 
       - name: Crear el instalador
@@ -85,6 +86,7 @@ jobs:
           artifact-configuration-slug: instalador
           github-artifact-id: ${{ steps.instalador.outputs.artifact-id }}
           wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600   # tiempo para aprobar la firma en SignPath
           output-artifact-directory: dist
 
       # El SHA-256 se calcula al final, sobre el instalador definitivo (firmado o no)

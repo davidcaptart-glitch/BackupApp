@@ -1,5 +1,10 @@
 # Cambios
 
+## 0.4.1
+- BackupApp es software libre (licencia GPL-3.0).
+- El instalador explica qué hace el programa con Internet (solo actualizaciones y, si la activas, la nube directa) y se compila en GitHub a partir del código.
+- Nueva opción en el menú del escudo para desactivar la búsqueda automática de actualizaciones.
+
 ## 0.4.0
 - Nube directa: conecta tu cuenta de Google Drive, Dropbox, OneDrive, pCloud, Box o Backblaze B2 sin instalar su programa ni ocupar espacio en el PC, y con cifrado opcional (solo tú, con tu contraseña, puedes ver los archivos). Usa rclone, que se descarga la primera vez comprobando que es el original.
 - La copia muestra su progreso y se puede detener: lo copiado se conserva y la próxima vez sigue donde se quedó.
