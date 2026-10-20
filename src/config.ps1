@@ -358,15 +358,20 @@ function Repartir($unidades, $tam, $discos, $rep) {
     return $rep
 }
 function TamanosDe($unidades) {
-    # Tamanos medidos (tamanos_unidades.csv) y, para las unidades que aun no se han medido, se miden ahora
-    $tam = LeerTamUnidades
+    # Tamanos medidos (tamanos_unidades.csv) y, para las unidades que aun no se han medido, se miden ahora y se guardan
+    $tam = LeerTamUnidades; $nuevos = $false
     foreach ($u in $unidades) {
         if (-not $tam.ContainsKey($u.Clave)) {
             $a = if ($u.Tipo -eq 'sueltos') { Analizar $u.Carpeta.Origen -SoloRaiz } else { Analizar $u.Clave -Rapido }
-            $tam[$u.Clave] = $a.BytesBackup
+            $tam[$u.Clave] = $a.BytesBackup; $nuevos = $true
         }
     }
+    if ($nuevos) { GuardarTamUnidades $tam }
     return $tam
+}
+function GuardarTamUnidades($tam) {
+    $hoy = Get-Date -Format 'yyyy-MM-dd'
+    try { $tam.GetEnumerator() | ForEach-Object { [pscustomobject]@{ Unidad = $_.Key; Bytes = $_.Value; Fecha = $hoy } } | Export-Csv $FicheroUnidades -Delimiter ';' -NoTypeInformation -Encoding UTF8 } catch {}
 }
 function AsignarNuevas {
     $discos = @(LeerDiscos)

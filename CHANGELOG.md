@@ -1,5 +1,11 @@
 # Cambios
 
+## 0.4.7
+- La ventana de la copia muestra el progreso en GB, el archivo que se está copiando, la velocidad y el tiempo que falta (antes solo contaba carpetas y parecía parada en las grandes).
+- Copia más rápida en discos duros: copia de dos en dos archivos en vez de ocho, que en discos que no son SSD hacía saltar al cabezal.
+- En «Liberar espacio», nueva sección «Ya copiado en tus discos de backup»: subcarpetas sin cambios desde su última copia que puedes borrar del PC. Antes se comprueba que la copia es idéntica y se guarda aparte en el disco (_ARCHIVO).
+- Arreglado el mensaje de espacio liberado cuando pasaba de 2 GB.
+
 ## 0.4.6
 - Mejor reparto cuando no cabe todo: dentro de cada prioridad se empieza por las carpetas pequeñas, así se protegen muchas más carpetas y lo que queda esperando a un disco nuevo son solo las más grandes.
 

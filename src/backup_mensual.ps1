@@ -47,6 +47,7 @@ function AbrirProgreso {
     Bombear
 }
 function Progreso($titulo, $detalle, [double]$fraccion, $cuenta = '') {
+    if ($env:BACKUPAPP_PRUEBA -and $cuenta -ne $script:ultimaCuenta) { $script:ultimaCuenta = $cuenta; [Console]::WriteLine("[PROGRESO] {0:P0} | $detalle | $cuenta" -f $fraccion) }
     if (-not $script:prog) { return }
     $w = $script:prog
     if ($titulo) { $w.FindName('Titulo').Text = $titulo }
@@ -56,16 +57,74 @@ function Progreso($titulo, $detalle, [double]$fraccion, $cuenta = '') {
 function CerrarProgreso { if ($script:prog) { $script:cerrandoProgreso = $true; $script:prog.Close(); $script:prog = $null } }
 function Bombear { [Windows.Forms.Application]::DoEvents() }
 
+# ---------- Progreso por GB: se lee el registro de robocopy (/BYTES) mientras copia ----------
+$script:copia = $null
+function EmpezarProgresoCopia([int64]$total) {
+    $pos = if (Test-Path -LiteralPath $Log) { (Get-Item -LiteralPath $Log).Length } else { 0 }
+    $script:copia = @{ Total = $total; Hecho = [int64]0; Actual = [int64]0; Archivo = ''; Pos = [int64]$pos
+                       Hist = (New-Object 'System.Collections.Generic.Queue[object]'); Visto = [datetime]::MinValue }
+}
+function LeerLogCopia {
+    $c = $script:copia; if (-not $c -or -not (Test-Path -LiteralPath $Log)) { return }
+    try {
+        $fs = [IO.File]::Open($Log, 'Open', 'Read', 'ReadWrite')
+        try {
+            if ($fs.Length -le $c.Pos) { return }
+            [void]$fs.Seek($c.Pos, 'Begin'); $buf = New-Object byte[] ([int][math]::Min(4MB, $fs.Length - $c.Pos)); $n = $fs.Read($buf, 0, $buf.Length)
+        } finally { $fs.Close() }
+        $txt = [Text.Encoding]::Default.GetString($buf, 0, $n)
+        $fin = $txt.LastIndexOf("`n"); if ($fin -lt 0) { return }      # solo lineas completas
+        $c.Pos += [Text.Encoding]::Default.GetByteCount($txt.Substring(0, $fin + 1))
+        foreach ($l in $txt.Substring(0, $fin).Split("`n")) {
+            # "    Nuevo arch    443547648    D:\ruta\archivo.mov"  (las de *EXTRA son borrados, no copias)
+            if ($l -match '^\s*([^\t]*?)\s*\t+\s*(\d+)\s*\t(.+?)\s*$' -and $Matches[1] -notmatch 'EXTRA') { $c.Actual += [int64]$Matches[2]; $c.Archivo = Split-Path $Matches[3] -Leaf }
+        }
+    } catch {}
+}
+function TextoProgresoCopia {
+    $c = $script:copia; $hecho = $c.Hecho + $c.Actual; $ahora = Get-Date
+    $c.Hist.Enqueue(@($ahora, $hecho)); while ($c.Hist.Count -gt 2 -and ($ahora - $c.Hist.Peek()[0]).TotalSeconds -gt 30) { [void]$c.Hist.Dequeue() }
+    $p = $c.Hist.Peek(); $seg = ($ahora - $p[0]).TotalSeconds
+    $vel = if ($seg -ge 5) { ($hecho - $p[1]) / $seg } else { 0 }
+    $txt = if ($c.Total -gt 0) { "$(GB $hecho) de $(GB $c.Total)" } else { "$(GB $hecho) copiados" }
+    if ($vel -gt 0 -and $c.Total -gt 0) {
+        $txt += "  $([char]0x00B7)  {0:N0} MB/s" -f ($vel / 1MB)
+        $falta = [math]::Max(0.0, [double]($c.Total - $hecho)) / $vel
+        $txt += "  $([char]0x00B7)  quedan " + $(if ($falta -ge 5400) { "unas {0:N0} h" -f ($falta / 3600) } elseif ($falta -ge 90) { "unos {0:N0} min" -f ($falta / 60) } else { "menos de 2 min" })
+    }
+    return $txt
+}
+$script:ssd = @{}
+function EsSSD($ruta) {
+    # Para decidir cuantos archivos se copian a la vez: en discos duros, de uno en uno o de dos en dos va mas rapido
+    $l = "$ruta".Substring(0, 1).ToUpper()
+    if (-not $script:ssd.ContainsKey($l)) {
+        $v = $false
+        try { $d = Get-Partition -DriveLetter $l -ErrorAction Stop | Get-Disk -ErrorAction Stop; $v = (Get-PhysicalDisk | Where-Object { $_.DeviceId -eq "$($d.Number)" }).MediaType -eq 'SSD' } catch {}
+        $script:ssd[$l] = $v
+    }
+    return $script:ssd[$l]
+}
+function Hilos($origen, $destino) { if ((EsSSD $origen) -and (EsSSD $destino)) { '/MT:8' } else { '/MT:2' } }
+
 # robocopy en un proceso aparte, para que la ventana siga respondiendo y se pueda detener
 function Robo([string[]]$argumentos) {
     $args2 = ($argumentos | ForEach-Object { if ($_ -match '[\s]' -and $_ -notmatch '^/') { "`"$_`"" } elseif ($_ -match '^(/LOG\+:)(.+)$') { "$($Matches[1])`"$($Matches[2])`"" } else { $_ } }) -join ' '
     $pi = New-Object Diagnostics.ProcessStartInfo 'robocopy.exe', $args2
     $pi.UseShellExecute = $false; $pi.CreateNoWindow = $true
     $p = [Diagnostics.Process]::Start($pi)
+    $ultimo = [datetime]::MinValue
     while (-not $p.WaitForExit(150)) {
         Bombear
         if ($script:detener) { try { $p.Kill() } catch {}; $p.WaitForExit(); return 16 }
+        if ($script:copia -and ((Get-Date) - $ultimo).TotalMilliseconds -ge 1000) {
+            $ultimo = Get-Date; LeerLogCopia
+            $c = $script:copia
+            $fr = if ($c.Total -gt 0) { [math]::Min(0.999, ($c.Hecho + $c.Actual) / $c.Total) } else { 0 }
+            Progreso $null "$($script:unidadActual)$(if ($c.Archivo) { "  $([char]0x00B7)  $($c.Archivo)" })" $fr (TextoProgresoCopia)
+        }
     }
+    if ($script:copia) { LeerLogCopia }
     return $p.ExitCode
 }
 
@@ -159,34 +218,39 @@ foreach ($disco in $conectados) {
     $rep = AsignarNuevas
     $unidades = @(UnidadesActuales | Where-Object { $rep[$_.Clave] -eq $disco.Id })
 
-    # 5) Aviso de espacio previsto
-    $tam = LeerTamUnidades
+    # 5) Aviso de espacio previsto (si falta algun tamano, se mide ahora: tambien sirve para el progreso)
+    $tam = TamanosDe $unidades
     $previsto = ($unidades | ForEach-Object { [int64]$tam[$_.Clave] } | Measure-Object -Sum).Sum
     if ($previsto -gt $disco.Capacidad) {
         $r = Aviso "«$($disco.Nombre)» se queda pequeño" "A este disco le corresponden $(GB $previsto), pero solo tiene $(GB $disco.Capacidad). Conviene añadir otro disco: lo nuevo irá al que tenga más sitio.`n`n¿Copiar igualmente lo que quepa?" @('No', 'Copiar igualmente') 'Copiar igualmente'
         if ($r -ne 'Copiar igualmente') { $resumen += "$($disco.Nombre): no se copió por falta de espacio"; continue }
     }
 
-    # 6) Copia diferencial de cada unidad
+    # 6) Copia diferencial de cada unidad (con progreso por GB, velocidad y tiempo que falta)
     $errores = @(); $n = 0
+    EmpezarProgresoCopia ([int64]$previsto)
     foreach ($u in $unidades) {
         if ($script:detener) { break }
         $n++
-        Progreso $null "$($u.Carpeta.Origen | Split-Path -Leaf)  $([char]0x203A)  $($u.Nombre)" (($n - 1) / [math]::Max(1, $unidades.Count)) "$n de $($unidades.Count) carpetas"
+        $script:unidadActual = "$($u.Carpeta.Origen | Split-Path -Leaf)  $([char]0x203A)  $($u.Nombre)  ($n de $($unidades.Count))"
+        Progreso $null $script:unidadActual $(if ($script:copia.Total -gt 0) { $script:copia.Hecho / $script:copia.Total } else { ($n - 1) / [math]::Max(1, $unidades.Count) }) (TextoProgresoCopia)
         if ($u.Tipo -eq 'carpeta') {
             $dst = Join-Path $disco.Raiz (Join-Path $u.Carpeta.Destino $u.Nombre)
-            $c = Robo (@($u.Clave, $dst, '/XD') + $Excluir + @('/MIR', '/FFT', '/XJ', '/R:1', '/W:2', '/MT:8', '/NP', '/NDL', "/LOG+:$Log"))
+            $c = Robo (@($u.Clave, $dst, '/XD') + $Excluir + @('/MIR', '/FFT', '/XJ', '/R:1', '/W:2', (Hilos $u.Clave $disco.Raiz), '/BYTES', '/NP', '/NDL', "/LOG+:$Log"))
             if ($c -ge 8 -and -not $script:detener) { $errores += "$($u.Clave) (código $c)" }
         } else {
             # Archivos sueltos de la raiz: copiar solo los de primer nivel y borrar los que ya no existen
             $dst = Join-Path $disco.Raiz $u.Carpeta.Destino
-            $c = Robo @($u.Carpeta.Origen, $dst, '/FFT', '/R:1', '/W:2', '/NP', '/NDL', "/LOG+:$Log")
+            $c = Robo @($u.Carpeta.Origen, $dst, '/FFT', '/R:1', '/W:2', '/BYTES', '/NP', '/NDL', "/LOG+:$Log")
             if ($c -ge 8 -and -not $script:detener) { $errores += "$($u.Carpeta.Origen)\* (código $c)" }
             Get-ChildItem -LiteralPath $dst -File -Force -ErrorAction SilentlyContinue |
                 Where-Object { -not (Test-Path -LiteralPath (Join-Path $u.Carpeta.Origen $_.Name)) } |
                 Remove-Item -Force -ErrorAction SilentlyContinue
         }
+        # Unidad terminada: cuenta entera (en las copias siguientes solo se copia lo que ha cambiado)
+        $script:copia.Hecho += [math]::Max([int64]$tam[$u.Clave], $script:copia.Actual); $script:copia.Actual = 0; $script:copia.Archivo = ''
     }
+    $script:copia = $null
     if ($script:detener) { $resumen += "$($disco.Nombre): copia detenida en la carpeta $n de $($unidades.Count). Lo copiado se conserva."; break }
 
     # 7) Espejo: borrar del disco las carpetas que ya no existen en el origen
