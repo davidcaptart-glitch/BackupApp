@@ -1,5 +1,10 @@
 # Cambios
 
+## 0.4.5
+- Arreglado: la medición de carpetas podía quedarse parada a mitad (por ejemplo en el 35 %) sin avanzar más.
+- Si una subcarpeta no se puede medir (sin permiso o en uso), se apunta y se sigue con las demás.
+- Lo que ya está medido se guarda sobre la marcha: si cierras el asistente y lo vuelves a abrir, no se repite.
+
 ## 0.4.4
 - Al abrir BackupApp desde el menú Inicio se muestra su ventana (el plan de copias, o el asistente si aún no está configurado), aunque ya estuviera funcionando junto al reloj. Antes no pasaba nada.
 - Al arrancar Windows y después de actualizarse sigue entrando en silencio, solo con el escudo junto al reloj.

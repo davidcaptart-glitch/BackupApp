@@ -144,22 +144,22 @@ function UnidadDeRuta($ruta) {
 }
 
 # Recorre una carpeta: bytes totales, bytes que se copian (sin $Excluir), archivos y ultima modificacion.
-# El recorrido va en C# (mucho mas rapido que un bucle de PowerShell). $Progreso, si se da, recibe los bytes
-# contados hasta el momento unas tres veces por segundo. Con -Rapido no entra en las carpetas excluidas
+# El recorrido va en C# (mucho mas rapido que un bucle de PowerShell). $Contador, si se da (un [long[]] de 1),
+# recibe en [0] los bytes contados hasta el momento: asi otra ventana puede mostrar el progreso sin que el
+# medidor tenga que llamar a codigo de PowerShell (eso, desde otro hilo, puede quedarse bloqueado). Con -Rapido no entra en las carpetas excluidas
 # (node_modules...): Bytes = BytesBackup, pero es muchisimo mas rapido. Basta para planificar el reparto.
-if (-not ("BackupApp.Medidor2" -as [type])) {
+if (-not ("BackupApp.Medidor3" -as [type])) {
     Add-Type -TypeDefinition @"
 using System;
 using System.IO;
 using System.Collections.Generic;
 namespace BackupApp {
-    public static class Medidor2 {
-        public static long[] Medir(string raiz, bool soloRaiz, bool entrarExcluidas, string[] excluir, Action<long> progreso) {
+    public static class Medidor3 {
+        public static long[] Medir(string raiz, bool soloRaiz, bool entrarExcluidas, string[] excluir, long[] contador) {
             HashSet<string> ex = new HashSet<string>(excluir ?? new string[0], StringComparer.OrdinalIgnoreCase);
             long bytes = 0, backup = 0, archivos = 0, ultimo = DateTime.MinValue.Ticks;
             Stack<KeyValuePair<DirectoryInfo, bool>> pila = new Stack<KeyValuePair<DirectoryInfo, bool>>();
             pila.Push(new KeyValuePair<DirectoryInfo, bool>(new DirectoryInfo(raiz), false));
-            DateTime aviso = DateTime.UtcNow;
             while (pila.Count > 0) {
                 KeyValuePair<DirectoryInfo, bool> e = pila.Pop();
                 try {
@@ -178,7 +178,7 @@ namespace BackupApp {
                         long w = f.LastWriteTime.Ticks; if (w > ultimo) ultimo = w;
                     }
                 } catch { }
-                if (progreso != null && (DateTime.UtcNow - aviso).TotalMilliseconds > 300) { aviso = DateTime.UtcNow; progreso(bytes); }
+                if (contador != null) System.Threading.Interlocked.Exchange(ref contador[0], backup);
             }
             return new long[] { bytes, backup, archivos, ultimo };
         }
@@ -186,9 +186,8 @@ namespace BackupApp {
 }
 "@
 }
-function Analizar($raiz, [switch]$SoloRaiz, [switch]$Rapido, $Progreso = $null) {
-    $p = if ($Progreso) { [Action[long]]$Progreso } else { $null }
-    $r = [BackupApp.Medidor2]::Medir($raiz, [bool]$SoloRaiz, -not $Rapido, [string[]]$Excluir, $p)
+function Analizar($raiz, [switch]$SoloRaiz, [switch]$Rapido, [long[]]$Contador = $null) {
+    $r = [BackupApp.Medidor3]::Medir($raiz, [bool]$SoloRaiz, -not $Rapido, [string[]]$Excluir, $Contador)
     [pscustomobject]@{ Bytes = $r[0]; BytesBackup = $r[1]; Archivos = $r[2]
                        Ultimo = $(if ($r[3] -gt [datetime]::MinValue.Ticks) { New-Object DateTime ([int64]$r[3]) } else { [datetime]::MinValue }) }
 }

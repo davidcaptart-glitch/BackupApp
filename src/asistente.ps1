@@ -102,6 +102,7 @@ function EncolarMedicion($o, [switch]$Primero) {
 function AsegurarMedidor {
     $a = $script:asis
     if ($a.Medidor -and -not $a.Medidor.H.IsCompleted) { return }
+    $a.Estado.Clave = $null   # si el medidor se paro a mitad, que no se quede marcada una carpeta como "midiendo"
     if ($a.Alta.IsEmpty -and $a.Baja.IsEmpty) { return }
     if ($a.Medidor) { try { $a.Medidor.PS.Dispose() } catch {} }
     $ps = [powershell]::Create()
@@ -109,25 +110,33 @@ function AsegurarMedidor {
         param($config, $alta, $baja, $res, $estado)
         . $config
         $u = $null
+        $cont = $estado.Contador
         while ($alta.TryDequeue([ref]$u) -or $baja.TryDequeue([ref]$u)) {
             if ($estado.Hechas.ContainsKey($u.Clave)) { continue }   # ya medida (estaba en las dos colas)
-            $estado.Clave = $u.Clave; $estado.Bytes = [int64]0
-            $cb = { param($b) $estado.Bytes = $b }.GetNewClosure()
-            $m = if ($u.Tipo -eq 'sueltos') { Analizar $u.Origen -SoloRaiz } else { Analizar $u.Clave -Rapido -Progreso $cb }
+            $cont[0] = 0; $estado.Clave = $u.Clave
+            $err = $null
+            try { $m = if ($u.Tipo -eq 'sueltos') { Analizar $u.Origen -SoloRaiz } else { Analizar $u.Clave -Rapido -Contador $cont } }
+            catch { $m = [pscustomobject]@{ Bytes = 0; BytesBackup = 0 }; $err = "$($_.Exception.Message)" }   # se apunta y se sigue
             $estado.Hechas[$u.Clave] = $true
-            $res.Enqueue([pscustomobject]@{ Clave = $u.Clave; Bytes = $m.Bytes; BytesBackup = $m.BytesBackup })
+            $res.Enqueue([pscustomobject]@{ Clave = $u.Clave; Bytes = $m.Bytes; BytesBackup = $m.BytesBackup; Error = $err })
         }
         $estado.Clave = $null
     }.ToString())
     foreach ($x in @((Join-Path $Codigo "config.ps1"), $a.Alta, $a.Baja, $a.Cola, $a.Estado)) { [void]$ps.AddArgument($x) }
     $a.Medidor = @{ PS = $ps; H = $ps.BeginInvoke() }
 }
+function GuardarTamanosMedidos {
+    $a = $script:asis
+    $tam = LeerTamUnidades; foreach ($k in @($a.Tam.Keys)) { if (-not $a.Errores.ContainsKey($k)) { $tam[$k] = $a.Tam[$k] } }
+    $hoy = Get-Date -Format 'yyyy-MM-dd'
+    try { $tam.GetEnumerator() | ForEach-Object { [pscustomobject]@{ Unidad = $_.Key; Bytes = $_.Value; Fecha = $hoy } } | Export-Csv $FicheroUnidades -Delimiter ';' -NoTypeInformation -Encoding UTF8 } catch {}
+}
 function MedidaDe($o) {
     # Lo medido de una carpeta, contando lo que lleva la subcarpeta que se esta midiendo ahora
     $a = $script:asis; $b = [int64]0; $n = 0; $parcial = [int64]0
     foreach ($u in $o.Unidades) {
         if ($a.Tam.ContainsKey($u.Clave)) { $b += $a.Tam[$u.Clave]; $n++ }
-        elseif ($a.Estado.Clave -eq $u.Clave) { $parcial = [int64]$a.Estado.Bytes }
+        elseif ($a.Estado.Clave -eq $u.Clave) { $parcial = [int64]$a.Estado.Contador[0] }
     }
     [pscustomobject]@{ Bytes = $b; Parcial = $parcial; Medidas = $n; Total = @($o.Unidades).Count; Completa = ($n -ge @($o.Unidades).Count) }
 }
@@ -627,6 +636,7 @@ function PintarPlan($panel, $plan, $ahorro = 0, $discosInfo = $null, $nubesPlan 
     else { $notas += "Tus carpetas crecen unos $(TamTxt $plan.CrecimientoAnual) al año." }
     if ($ahorro -gt 1GB) { $notas += "No se copian carpetas que se regeneran solas ($(($Excluir | Select-Object -First 3) -join ', ')...): ahorras $(TamTxt $ahorro)." }
     else { $notas += "No se copian las carpetas que se regeneran solas ($(($Excluir | Select-Object -First 3) -join ', ')...)." }
+    if ($script:asis -and $script:asis.Errores.Count) { $notas += "No se pudieron medir $($script:asis.Errores.Count) subcarpetas (sin permiso o en uso): $((@($script:asis.Errores.Keys) | Select-Object -First 3) -join ', ')$(if ($script:asis.Errores.Count -gt 3) { '...' }). Se copiarán igualmente." }
     foreach ($n in $notas) { $x = Texto $n 12 'Normal' 'Texto2'; $x.Margin = '4,4,0,0'; [void]$panel.Children.Add($x) }
 }
 function CalcularPlan {
@@ -816,7 +826,8 @@ function MostrarAsistente($alTerminar = $null, [switch]$Modal) {
     $a = @{ Carpetas = [ordered]@{}; Tam = (LeerTamUnidades); Total = @{}; Decision = @{}; Paso = 0; Plan = $null; Guardado = $false
             Cola = (New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'); Medidor = $null; ProgMed = $null; Encolado = @{}
             Alta = (New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'); Baja = (New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]')
-            Estado = [hashtable]::Synchronized(@{ Clave = $null; Bytes = [int64]0; Hechas = [hashtable]::Synchronized(@{}) })
+            Estado = [hashtable]::Synchronized(@{ Clave = $null; Contador = (New-Object 'long[]' 1); Hechas = [hashtable]::Synchronized(@{}) })
+            Errores = @{}; UltimoGuardado = [datetime]::MinValue
             AlTerminar = $alTerminar; FilasDiscos = $null; SinPreguntar = $false; Iniciado = $false
             FilasNubes = $null; DecisionNube = @{}; NubesManuales = (New-Object 'System.Collections.Generic.List[object]'); NubesPlan = @() }
     $script:asis = $a
@@ -842,7 +853,12 @@ function MostrarAsistente($alTerminar = $null, [switch]$Modal) {
     $a.Timer = New-Object Windows.Threading.DispatcherTimer; $a.Timer.Interval = [TimeSpan]::FromMilliseconds(400)
     $a.Timer.add_Tick({
         $a = $script:asis; $r = $null; $hubo = $false
-        while ($a.Cola.TryDequeue([ref]$r)) { $a.Tam[$r.Clave] = [int64]$r.BytesBackup; $a.Total[$r.Clave] = [int64]$r.Bytes; $hubo = $true }
+        while ($a.Cola.TryDequeue([ref]$r)) {
+            $a.Tam[$r.Clave] = [int64]$r.BytesBackup; $a.Total[$r.Clave] = [int64]$r.Bytes; $hubo = $true
+            if ($r.Error) { $a.Errores[$r.Clave] = $r.Error }
+        }
+        # Lo medido se guarda sobre la marcha (cada pocos segundos): si se cierra el asistente, no hay que repetirlo
+        if ($hubo -and ((Get-Date) - $a.UltimoGuardado).TotalSeconds -ge 5) { GuardarTamanosMedidos; $a.UltimoGuardado = Get-Date }
         AsegurarMedidor
         $midiendo = [bool]$a.Estado.Clave
         if ($hubo -or $midiendo) { RefrescarTamanos }
@@ -850,6 +866,7 @@ function MostrarAsistente($alTerminar = $null, [switch]$Modal) {
     })
     $w.add_Closed({
         $a = $script:asis; $a.Timer.Stop()
+        if (-not $a.Guardado) { GuardarTamanosMedidos }
         if ($a.Medidor) { try { $a.Medidor.PS.Stop(); $a.Medidor.PS.Dispose() } catch {} }
     })
     $w.add_ContentRendered({
