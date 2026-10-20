@@ -20,7 +20,8 @@ $NoSugerir = @('Program Files', 'Program Files (x86)', 'Windows', 'ProgramData',
 # ...ni las que por su nombre son temporales o caches que se regeneran
 $PatronNoSugerir = '^\.|pnpm-store|^te?mp(_|$)|cache|^\$'
 $GlifoDisco = [string][char]0xEDA2; $GlifoUsb = [string][char]0xE88E; $GlifoCarpeta = [string][char]0xE8B7
-$GlifoAviso = [string][char]0xE7BA; $GlifoOk = [string][char]0xE73E; $GlifoCompra = [string][char]0xE7BF
+$GlifoAviso = [string][char]0xE7BA; $GlifoOk = [string][char]0xE73E; $GlifoCompra = [string][char]0xE7BF; $GlifoNube = [string][char]0xE753
+$CuotasNube = @(2GB, 5GB, 15GB, 50GB, 100GB, 200GB, 1TB, 2TB)
 
 function TamTxt($b) {
     if ($null -eq $b) { return "-" }
@@ -215,8 +216,169 @@ function DiscosElegidos {
     }
 }
 
+# ---------- Paso 2: nube ----------
+function LlenarNubes {
+    $a = $script:asis; $lista = $a.Win.FindName('ListaNubes'); $lista.Children.Clear()
+    $reg = @(LeerNubes)
+    $a.FilasNubes = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($d in @(@(DetectarNubes) + $a.NubesManuales.ToArray())) {   # (@() sobre una List vacia falla en PowerShell 5.1)
+        if ($a.FilasNubes | Where-Object { $_.Info -and $_.Info.RaizSync -eq $d.RaizSync }) { continue }
+        $r = $reg | Where-Object { ($d.IdMarca -and $_.Id -eq $d.IdMarca) -or $_.RaizSync -eq $d.RaizSync } | Select-Object -First 1
+        $cuota = if ($d.Cuota) { [int64]$d.Cuota } elseif ($r) { [int64]$r.Capacidad } else { CuotaSugerida $d.Proveedor }
+        if (-not $cuota) { $cuota = 5GB }
+        $t = [pscustomobject]@{ Clave = $(if ($r) { $r.Id } else { $d.RaizSync.ToLower() }); Info = $d; Registro = $r; Nombre = $(if ($r) { $r.Nombre } else { $d.Nombre })
+                               Marcar = $(if ($r) { $true } else { $d.Activa -eq $true }); Cuota = $cuota; CuotaFija = [bool]$d.Cuota
+                               Prioridad = $(if ($r -and [int]$r.Prioridad -gt 0) { [int]$r.Prioridad } else { 1 }); Ajeno = $null }
+        $a.FilasNubes.Add($t)
+    }
+    foreach ($r in $reg) {
+        if ($a.FilasNubes | Where-Object { $_.Registro -and $_.Registro.Id -eq $r.Id }) { continue }
+        $a.FilasNubes.Add([pscustomobject]@{ Clave = $r.Id; Info = $null; Registro = $r; Nombre = $r.Nombre; Marcar = $true; Cuota = [int64]$r.Capacidad; CuotaFija = $false; Prioridad = [int]$r.Prioridad; Ajeno = $r.Ajeno })
+    }
+    for ($k = 0; $k -lt $a.FilasNubes.Count; $k++) {
+        $t = $a.FilasNubes[$k]
+        if ($a.DecisionNube.ContainsKey($t.Clave)) { $dd = $a.DecisionNube[$t.Clave]; $t.Marcar = $dd.Marcar; $t.Cuota = $dd.Cuota; $t.Prioridad = $dd.Prioridad }
+        [void]$lista.Children.Add((TarjetaNube $t $k))
+    }
+    $amazon = RutaAmazonPhotos
+    if ($amazon) { [void]$lista.Children.Add((TarjetaAmazon $amazon)) }
+    if (-not $a.FilasNubes.Count -and -not $amazon) {
+        [void]$lista.Children.Add((Tarjeta (Texto "No hay ninguna nube instalada en este PC. Abajo tienes cómo conectar las más usadas." 13 'Normal' 'Texto2')))
+    }
+    PintarComoConectar
+}
+function GuardarDecisionNube($t) { $script:asis.DecisionNube[$t.Clave] = @{ Marcar = $t.Marcar; Cuota = $t.Cuota; Prioridad = $t.Prioridad } }
+function TarjetaNube($t, $k) {
+    $i = $t.Info
+    $chk = New-Object Windows.Controls.CheckBox; $chk.IsChecked = $t.Marcar; $chk.Tag = $k; $chk.IsEnabled = [bool]$i -or [bool]$t.Registro
+    $chk.add_Click({ param($s, $e) $t = $script:asis.FilasNubes[$s.Tag]; $t.Marcar = [bool]$s.IsChecked; GuardarDecisionNube $t })
+    $ico = Icono $GlifoNube 26 'Acento'; $ico.Margin = '14,0,14,0'
+    $prov = if ($i) { $i.Proveedor } else { $t.Registro.Proveedor }
+    $sub = if ($i) { "$prov   $([char]0x00B7)   $($i.RaizSync)" } else { "$prov   $([char]0x00B7)   no se encuentra la carpeta $($t.Registro.RaizSync)" }
+    $chips = New-Object Windows.Controls.WrapPanel; $chips.Margin = '0,6,0,0'
+    if ($t.Registro) { [void]$chips.Children.Add((Chip "En uso" 'acento')) }
+    if ($i -and $i.Activa -eq $true) { [void]$chips.Children.Add((Chip "$prov está abierto" 'acento')) }
+    elseif ($i -and $i.Activa -eq $false) { [void]$chips.Children.Add((Chip "$prov no está abierto o no tiene sesión: no se subirá nada" 'aviso')) }
+    elseif ($i) { [void]$chips.Children.Add((Chip "Carpeta sincronizada" 'normal')) }
+    else { [void]$chips.Children.Add((Chip "Carpeta no encontrada" 'aviso')) }
+    $det = Texto $sub 11.5 'Normal' 'Texto2'; $det.TextWrapping = 'NoWrap'; $det.TextTrimming = 'CharacterEllipsis'
+    $info = Apilar @((Texto $t.Nombre 14 'SemiBold'), $det, $chips)
+    $cab = Fila @($chk, $ico, $info) @('Auto', 'Auto', '*')
+    # Opciones: espacio contratado y que subir
+    $op = New-Object Windows.Controls.StackPanel; $op.Margin = '80,10,0,0'
+    $fc = New-Object Windows.Controls.WrapPanel
+    [void]$fc.Children.Add(($(Texto "Espacio contratado" 12 'Normal' 'Texto2') | ForEach-Object { $_.Width = 140; $_.VerticalAlignment = 'Center'; $_ }))
+    if ($t.CuotaFija) { [void]$fc.Children.Add((Texto "$(TamTxt $t.Cuota) (lo indica $prov)" 12 'SemiBold')) }
+    else {
+        $cuotas = @($CuotasNube); if ($cuotas -notcontains $t.Cuota) { $cuotas = @($cuotas + $t.Cuota | Sort-Object) }
+        foreach ($c in $cuotas) {
+            $rb = New-Object Windows.Controls.RadioButton; $rb.Style = $script:Estilos['Pastilla']; $rb.Content = $(if ($c -ge 1TB) { "$($c / 1TB) TB" } else { "$($c / 1GB) GB" })
+            $rb.GroupName = "cuota_$k"; $rb.IsChecked = ($c -eq $t.Cuota); $rb.Tag = "$k|$c"
+            $rb.add_Checked({ param($s, $e) $k, $c = $s.Tag.Split('|'); $t = $script:asis.FilasNubes[[int]$k]; $t.Cuota = [int64]$c; GuardarDecisionNube $t })
+            [void]$fc.Children.Add($rb)
+        }
+    }
+    $fp = New-Object Windows.Controls.WrapPanel; $fp.Margin = '0,6,0,0'
+    [void]$fp.Children.Add(($(Texto "Qué subir" 12 'Normal' 'Texto2') | ForEach-Object { $_.Width = 140; $_.VerticalAlignment = 'Center'; $_ }))
+    foreach ($p in @(@(1, 'Solo lo imprescindible'), @(2, 'Imprescindible y normal'))) {
+        $rb = New-Object Windows.Controls.RadioButton; $rb.Style = $script:Estilos['Pastilla']; $rb.Content = $p[1]
+        $rb.GroupName = "prio_$k"; $rb.IsChecked = ($t.Prioridad -eq $p[0]); $rb.Tag = "$k|$($p[0])"
+        $rb.add_Checked({ param($s, $e) $k, $p = $s.Tag.Split('|'); $t = $script:asis.FilasNubes[[int]$k]; $t.Prioridad = [int]$p; GuardarDecisionNube $t })
+        [void]$fp.Children.Add($rb)
+    }
+    $op.Children.Add($fc) | Out-Null; $op.Children.Add($fp) | Out-Null
+    $card = Tarjeta (Apilar @($cab, $op))
+    if (-not $i) { $card.Opacity = 0.7 }
+    return $card
+}
+function TarjetaAmazon($exe) {
+    # Copia directa: BackupApp no copia nada; solo explica como decirle a Amazon Photos que suba las fotos
+    $fotos = @(MarcadasAsis | Where-Object { $_.Ruta -match '(?i)foto|photo|imagen|picture|lightroom' } | ForEach-Object { $_.Ruta })
+    $donde = if ($fotos) { "tus carpetas de fotos ($($fotos -join ', '))" } else { "tu carpeta de fotos" }
+    $b = New-Object Windows.Controls.Button; $b.Content = "Abrir Amazon Photos"; $b.Tag = $exe
+    $b.add_Click({ param($s, $e) Start-Process $s.Tag })
+    $txt = Apilar @((Texto "Amazon Photos" 14 'SemiBold'), (Texto "Copia directa de fotos: su programa sube él mismo las carpetas que le indiques. Con Prime, fotos sin límite a resolución completa, también RAW (ARW, CR2, NEF...); los vídeos, 5 GB." 12 'Normal' 'Texto2'), (Texto "Para usarlo: abre Amazon Photos > Copia de seguridad > Añadir carpeta y elige $donde. No hace falta marcar nada aquí." 12 'SemiBold'))
+    $txt.Children[1].Margin = '0,2,0,6'
+    $ico = Icono $GlifoNube 26 'Acento'; $ico.Margin = '36,0,14,0'
+    $f = Fila @($ico, $txt, $b) @('Auto', '*', 'Auto'); $f.Children[1].Margin = '0,0,16,0'
+    return (Tarjeta $f)
+}
+function PintarComoConectar {
+    # Servicios populares que no estan en este PC: como conectarlos
+    $p = $script:asis.Win.FindName('ComoConectar'); $p.Children.Clear()
+    $hay = @($script:asis.FilasNubes | Where-Object { $_.Info } | ForEach-Object { $_.Info.Proveedor })
+    $faltan = @($ServiciosNube | Where-Object { $hay -notcontains $_.Proveedor })
+    if (-not (RutaAmazonPhotos)) { $faltan += $AmazonPhotos }
+    if (-not $faltan) { return }
+    [void]$p.Children.Add((Texto "Cómo conectar otra nube" 14 'SemiBold'))
+    $x = Texto "Instala el programa de escritorio del servicio, inicia sesión y pulsa Actualizar: BackupApp encontrará su carpeta. Si usas otro servicio o un NAS, elige su carpeta con el botón de arriba." 12 'Normal' 'Texto2'
+    $x.Margin = '0,2,0,10'; [void]$p.Children.Add($x)
+    $g = New-Object Windows.Controls.Primitives.UniformGrid; $g.Columns = 2
+    foreach ($s in $faltan) {
+        $b = New-Object Windows.Controls.Button; $b.Style = $script:Estilos['Enlace']; $b.Content = "Descargar"; $b.Tag = $s.Url
+        $b.add_Click({ param($s, $e) Start-Process $s.Tag })
+        $nota = if ($s.Nota) { $s.Nota } else { "$(TamTxt $s.Gratis) gratis" }
+        $f = Fila @((Icono $GlifoNube 16), (Apilar @((Texto $s.Proveedor 13 'SemiBold'), (Texto $nota 11.5 'Normal' 'Texto2'))), $b) @('Auto', '*', 'Auto')
+        $f.Children[1].Margin = '10,0,10,0'
+        $c = Tarjeta $f; $c.Margin = '0,0,8,8'; $c.Padding = '14,8'
+        [void]$g.Children.Add($c)
+    }
+    [void]$p.Children.Add($g)
+}
+function AnadirNubeManual {
+    $r = ElegirCarpeta $script:asis.Win "Elige la carpeta que sincroniza tu nube o tu NAS"
+    if (-not $r) { return }
+    if ($r.TrimEnd('\') -match '^[A-Za-z]:$') { [void](Dialogo $script:asis.Win "Elige una carpeta" "Elige la carpeta que sincroniza tu servicio, no una unidad entera."); return }
+    foreach ($x in MarcadasAsis) { if ((DentroDe $r $x.Ruta) -or (DentroDe $x.Ruta $r)) { [void](Dialogo $script:asis.Win "Esa carpeta no sirve" "Está dentro de una carpeta que vas a copiar (o la contiene): se copiaría dentro de sí misma."); return } }
+    $script:asis.NubesManuales.Add((NubeElegida $r))
+    $script:asis.DecisionNube[$r.TrimEnd('\').ToLower()] = @{ Marcar = $true; Cuota = 5GB; Prioridad = 1 }
+    LlenarNubes
+}
+function NubesElegidas {
+    foreach ($t in @($script:asis.FilasNubes | Where-Object { $_.Marcar })) {
+        $i = $t.Info
+        if (-not $i) {   # registrada pero ahora no se encuentra: se conserva tal cual
+            $r = $t.Registro
+            [pscustomobject]@{ Id = $r.Id; Nombre = $r.Nombre; Proveedor = $r.Proveedor; RaizSync = $r.RaizSync; Capacidad = [int64]$t.Cuota; Prioridad = $t.Prioridad
+                               UltimaCopia = $r.UltimaCopia; Dias = $(if ($r.Dias) { $r.Dias } else { 7 }); Ajeno = [int64]$r.Ajeno; Nueva = $false; Activa = $null }
+            continue
+        }
+        if ($null -eq $t.Ajeno) { $t.Ajeno = AjenoNube $i.RaizSync $i.Cuota $i.Libre }
+        [pscustomobject]@{ Id = $(if ($t.Registro) { $t.Registro.Id } elseif ($i.IdMarca) { $i.IdMarca } else { "nube:$($i.RaizSync)" }); Nombre = $t.Nombre; Proveedor = $i.Proveedor
+                           RaizSync = $i.RaizSync; Capacidad = [int64]$t.Cuota; Prioridad = $t.Prioridad; UltimaCopia = $(if ($t.Registro) { $t.Registro.UltimaCopia } else { '' })
+                           Dias = 7; Ajeno = [int64]$t.Ajeno; Nueva = -not $t.Registro; Activa = $i.Activa }
+    }
+}
+
 # ---------- Paso 3: plan ----------
-function PintarPlan($panel, $plan, $ahorro = 0, $discosInfo = $null) {
+function TarjetaPlanNube($np) {
+    $n = $np.Nube; $p = $np.P
+    $cab = Fila @((Icono $GlifoNube 22 'Acento'), (Apilar @((Texto $n.Nombre 15 'SemiBold'), (Texto "Copia extra en la nube $([char]0x00B7) se sube con $($n.Proveedor)" 11.5 'Normal' 'Texto2'))), (Chip "Cada semana, sola" 'acento')) @('Auto', '*', 'Auto')
+    $cab.Children[1].Margin = '12,0,0,0'
+    $uso = Apilar @((BarraUso ($p.Bytes / [math]::Max(1.0, [double]$p.Util))), (Texto "$(TamTxt $p.Bytes) de $(TamTxt $p.Util) disponibles en tu espacio de $(TamTxt $n.Capacidad)" 12 'Normal' 'Texto2'))
+    $uso.Margin = '0,12,0,8'; $uso.Children[1].Margin = '0,6,0,0'
+    $l = New-Object Windows.Controls.StackPanel
+    $todas = @(@($p.Seleccion) + @($p.Fuera))
+    foreach ($g in ($p.Seleccion | Group-Object { $_.Carpeta.Origen })) {
+        $tot = @($todas | Where-Object { $_.Carpeta.Origen -eq $g.Name }).Count
+        $parte = if ($g.Count -lt $tot) { Chip "una parte" } else { $null }
+        $f = Fila @((Icono $GlifoCarpeta 14), (Texto (NombreCorto $g.Name) 13), $parte) @('Auto', '*', 'Auto'); $f.Children[1].Margin = '10,0,0,0'; $f.Margin = '0,3,0,3'
+        [void]$l.Children.Add($f)
+    }
+    if (-not $p.Seleccion) {
+        $txt = if ($p.Fuera -and $p.Util -le 0) { "No queda espacio libre en esta nube." }
+               elseif ($p.Fuera) { "Lo que toca subir no cabe en el espacio libre." }
+               elseif ($p.YaEnNube) { "Todo lo que toca subir ya está en $($n.Proveedor). Si añades más carpetas imprescindibles, se subirán aquí." }
+               else { "No hay carpetas que subir con esta prioridad." }
+        [void]$l.Children.Add((Texto $txt 12 'Normal' 'Texto2'))
+    }
+    $ya = @($p.YaEnNube | ForEach-Object { NombreCorto $_.Carpeta.Origen } | Select-Object -Unique)
+    if ($ya) { $x = Texto "Ya están en $($n.Proveedor), no hace falta subirlas: $($ya -join ', ')." 12 'Normal' 'Texto2'; $x.Margin = '0,8,0,0'; [void]$l.Children.Add($x) }
+    if ($p.BytesFuera -gt 0) { $x = Texto "No caben $(TamTxt $p.BytesFuera). Puedes ampliar el espacio contratado o subir solo lo imprescindible." 12 'Normal' 'Aviso'; $x.Margin = '0,6,0,0'; [void]$l.Children.Add($x) }
+    if ($n.Activa -eq $false) { $x = Texto "$($n.Proveedor) no está abierto: se copiará en su carpeta, pero no se subirá hasta que lo abras e inicies sesión." 12 'SemiBold' 'Aviso'; $x.Margin = '0,6,0,0'; [void]$l.Children.Add($x) }
+    return (Tarjeta (Apilar @($cab, $uso, $l)))
+}
+function PintarPlan($panel, $plan, $ahorro = 0, $discosInfo = $null, $nubesPlan = @()) {
     # Dibuja un plan (PlanDeCopias) con tarjetas. Lo usan el asistente y la ventana "Plan de copias".
     $panel.Children.Clear()
     $asignado = [int64](($plan.Discos | Measure-Object Asignado -Sum).Sum)
@@ -261,6 +423,7 @@ function PintarPlan($panel, $plan, $ahorro = 0, $discosInfo = $null) {
         }
         [void]$panel.Children.Add((Tarjeta $l 'AvisoSuave' 'AvisoSuave'))
     }
+    foreach ($np in $nubesPlan) { [void]$panel.Children.Add((TarjetaPlanNube $np)) }
     $rec = if ($plan.Comprar) { Fila @((Icono $GlifoCompra 22 'Acento'), (Apilar @((Texto "Te conviene un disco externo de $(TamComercial $plan.Comprar)" 15 'SemiBold'), (Texto "Formatéalo en NTFS para que la copia vaya comprimida. Al conectarlo te ofreceré registrarlo." 12 'Normal' 'Texto2')))) @('Auto', '*') }
            else { Fila @((Icono $GlifoOk 22 'Acento'), (Texto "Tus discos tienen sitio suficiente por ahora." 14 'SemiBold')) @('Auto', '*') }
     $rec.Children[1].Margin = '12,0,0,0'
@@ -293,8 +456,9 @@ function CalcularPlan {
     $rep = Repartir $units $a.Tam $discos $rep
     $plan = PlanDeCopias $discos $rep $a.Tam $carps
     $a.Plan = $plan; $a.Rep = $rep; $a.DiscosPlan = $discos
+    $a.NubesPlan = @(foreach ($n in @(NubesElegidas)) { [pscustomobject]@{ Nube = $n; P = (UnidadesParaNube $n $units $a.Tam) } })
     $ahorro = [int64]0; foreach ($u in $units) { if ($a.Total.ContainsKey($u.Clave)) { $ahorro += $a.Total[$u.Clave] - $a.Tam[$u.Clave] } }
-    PintarPlan $panel $plan $ahorro $discos
+    PintarPlan $panel $plan $ahorro $discos $a.NubesPlan
     $a.Win.Cursor = $null
     $a.Win.FindName('BtnSig').IsEnabled = $true
 }
@@ -307,6 +471,9 @@ function GuardarPlanAsis {
     $msg = "Se guardará el plan con $($m.Count) carpetas."
     foreach ($d in $nuevos) { $msg += "`n`n$([char]0x2022) Se registrará el disco '$($d.NombreReal)' ($($d.Letra)): se crea en él la carpeta $CarpetaBackup con una marca oculta. No se borra nada del disco." }
     foreach ($d in $quitados) { $msg += "`n`n$([char]0x2022) Se dejará de usar el disco '$($d.Nombre)'. No se borra nada de él." }
+    $nubes = @($a.NubesPlan | ForEach-Object { $_.Nube })
+    foreach ($n in @($nubes | Where-Object { $_.Nueva })) { $msg += "`n`n$([char]0x2022) Se guardará una copia de lo imprescindible en '$($n.Nombre)' (carpeta $(Join-Path $n.RaizSync $CarpetaNube)). La sube $($n.Proveedor)." }
+    foreach ($n in @(LeerNubes | Where-Object { @($nubes | ForEach-Object { $_.Id }) -notcontains $_.Id })) { $msg += "`n`n$([char]0x2022) Se dejará de copiar en '$($n.Nombre)'. Lo que ya hay en la nube no se borra." }
     if (-not $a.SinPreguntar -and (Dialogo $a.Win "Guardar el plan" $msg @('Cancelar', 'Guardar plan') 'Guardar plan') -ne 'Guardar plan') { return $false }
 
     EscribirCarpetas @($m | ForEach-Object { $_.Carpeta })
@@ -327,6 +494,12 @@ function GuardarPlanAsis {
     $rep = @{}
     foreach ($k in @($a.Rep.Keys)) { $v = $a.Rep[$k]; if ($mapa.ContainsKey($v)) { $v = $mapa[$v] } elseif ($v -like 'nuevo:*') { $v = $EnEspera }; $rep[$k] = $v }
     GuardarReparto $rep
+    # Nubes: las nuevas reciben su Id y su carpeta BackupApp con la marca
+    foreach ($n in $nubes) {
+        if ($n.Id -like 'nube:*') { $n.Id = [guid]::NewGuid().ToString() }
+        if ($n.Nueva) { try { $r = RutaNube $n; New-Item -ItemType Directory -Path $r -Force | Out-Null; EscribirMarca $r $n.Id $n.Nombre } catch {} }
+    }
+    GuardarNubes $nubes
     # Los tamanos medidos se guardan para que el icono y la copia no tengan que volver a medir
     $tam = LeerTamUnidades; foreach ($k in @($a.Tam.Keys)) { $tam[$k] = $a.Tam[$k] }
     $hoy = Get-Date -Format 'yyyy-MM-dd'
@@ -375,9 +548,18 @@ $XamlAsistente = @"
         <DockPanel x:Name="P1" Visibility="Collapsed">
           <DockPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
             <Button x:Name="BtnActualizar" Content="Actualizar" DockPanel.Dock="Left"/>
-            <TextBlock Margin="16,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" Foreground="{DynamicResource Texto2}" FontSize="12" Text="¿Aún no has conectado tu disco externo? Conéctalo y pulsa Actualizar. También puedes seguir sin disco: el plan te dirá cuál comprar."/>
+            <TextBlock Margin="16,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" Foreground="{DynamicResource Texto2}" FontSize="12" Text="¿Acabas de conectar un disco o de instalar tu nube? Pulsa Actualizar. Puedes seguir sin disco: el plan te dirá cuál comprar."/>
           </DockPanel>
-          <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"><StackPanel x:Name="ListaDiscos"/></ScrollViewer>
+          <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0">
+            <StackPanel>
+              <StackPanel x:Name="ListaDiscos"/>
+              <TextBlock Text="En la nube" FontSize="18" FontWeight="SemiBold" Margin="0,22,0,2"/>
+              <TextBlock Foreground="{DynamicResource Texto2}" TextWrapping="Wrap" Margin="0,0,0,12" Text="Una copia extra de lo más importante fuera de casa, por si le pasa algo al PC y al disco a la vez. Se guarda en la carpeta de tu servicio y su programa la sube."/>
+              <StackPanel x:Name="ListaNubes"/>
+              <Button x:Name="BtnOtraNube" Content="+  Otra carpeta en la nube o NAS" HorizontalAlignment="Left" Margin="0,4,0,0"/>
+              <StackPanel x:Name="ComoConectar" Margin="0,18,0,0"/>
+            </StackPanel>
+          </ScrollViewer>
         </DockPanel>
         <ScrollViewer x:Name="P2" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"><StackPanel x:Name="ListaPlan"/></ScrollViewer>
       </Grid>
@@ -392,7 +574,7 @@ $XamlAsistente = @"
 "@
 $PasosAsis = @(
     @{ Nombre = 'Carpetas'; Titulo = '¿Qué quieres proteger?'; Desc = 'Marca las carpetas que quieres copiar. Se miden mientras eliges. Si no caben todas, se copian antes las imprescindibles.' },
-    @{ Nombre = 'Discos'; Titulo = '¿Dónde se guarda la copia?'; Desc = 'Estas son las unidades de tu PC. Marca los discos que quieres usar para el backup; mejor si son externos.' },
+    @{ Nombre = 'Discos y nube'; Titulo = '¿Dónde se guarda la copia?'; Desc = 'Marca los discos que quieres usar para el backup (mejor si son externos) y, si quieres, una nube para tener además una copia de lo imprescindible.' },
     @{ Nombre = 'Plan'; Titulo = 'Tu plan de copias'; Desc = 'Esto es lo que se copiará en cada disco y cada cuánto. Todavía no se ha guardado nada.' })
 function PintarPasos {
     $a = $script:asis; $sp = $a.Win.FindName('Pasos'); $sp.Children.Clear()
@@ -416,7 +598,7 @@ function IrAPaso($p) {
     $w.FindName('BtnSig').Content = $(if ($p -eq 2) { 'Finalizar' } else { 'Siguiente' })
     $w.FindName('BtnSig').IsEnabled = $true
     PintarPasos
-    if ($p -eq 1) { $w.Cursor = [Windows.Input.Cursors]::Wait; LlenarDiscos; $w.Cursor = $null }
+    if ($p -eq 1) { $w.Cursor = [Windows.Input.Cursors]::Wait; LlenarDiscos; LlenarNubes; $w.Cursor = $null }
     if ($p -eq 2) { CalcularPlan }
 }
 function Siguiente {
@@ -433,7 +615,8 @@ function MostrarAsistente($alTerminar = $null, [switch]$Modal) {
     if ($script:asis -and $script:asis.Win -and $script:asis.Win.IsVisible) { [void]$script:asis.Win.Activate(); return }
     $a = @{ Carpetas = [ordered]@{}; Tam = (LeerTamUnidades); Total = @{}; Decision = @{}; Paso = 0; Plan = $null; Guardado = $false
             Cola = (New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'); Trabajos = (New-Object 'System.Collections.Generic.List[object]')
-            AlTerminar = $alTerminar; FilasDiscos = $null; SinPreguntar = $false; Iniciado = $false }
+            AlTerminar = $alTerminar; FilasDiscos = $null; SinPreguntar = $false; Iniciado = $false
+            FilasNubes = $null; DecisionNube = @{}; NubesManuales = (New-Object 'System.Collections.Generic.List[object]'); NubesPlan = @() }
     $script:asis = $a
     $w = NuevaVentana $XamlAsistente
     $a.Win = $w; $a.Lista = $w.FindName('Lista')
@@ -446,7 +629,8 @@ function MostrarAsistente($alTerminar = $null, [switch]$Modal) {
         $rb.add_Checked({ param($s, $e) GuardarAjuste 'Tema' $s.Tag; AplicarTemaATodas })
     }
     $w.FindName('BtnAnadir').add_Click({ AnadirCarpetaAsis })
-    $w.FindName('BtnActualizar').add_Click({ LlenarDiscos })
+    $w.FindName('BtnActualizar').add_Click({ LlenarDiscos; LlenarNubes })
+    $w.FindName('BtnOtraNube').add_Click({ AnadirNubeManual })
     $w.FindName('BtnAtras').add_Click({ IrAPaso ($script:asis.Paso - 1) })
     $w.FindName('BtnSig').add_Click({ Siguiente })
     $w.FindName('BtnCancelar').add_Click({ $script:asis.Win.Close() })

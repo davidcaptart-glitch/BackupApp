@@ -5,9 +5,11 @@
 #  - Cada carpeta vive en un disco; el reparto es automatico
 #  - Solo copia lo nuevo o modificado y borra lo que ya no existe
 #  - Comprime con NTFS y propone liberar carpetas sin uso
+#  - Copia extra de lo imprescindible en las carpetas de la nube (OneDrive, Dropbox...)
+#  -SoloNube: solo la copia en la nube que toque, sin preguntar nada (la lanza el icono cada semana)
 # ============================================================
 
-param([switch]$DesdeBandeja)
+param([switch]$DesdeBandeja, [switch]$SoloNube)
 
 . (Join-Path $PSScriptRoot "config.ps1")
 
@@ -26,7 +28,9 @@ if (-not $Carpetas) {
     exit
 }
 $registrados = @(LeerDiscos)
-if (-not $registrados) {
+$nubes = @(LeerNubes)
+if ($SoloNube) { $registrados = @() }
+elseif (-not $registrados -and -not $nubes) {
     Aviso ("Aun no tienes ningun disco de backup registrado.`n`n" +
            "Conecta un disco externo: el icono del escudo te ofrecera registrarlo.`n" +
            "(Tambien: clic derecho en el escudo > Discos de backup > Registrar disco conectado)") 48 | Out-Null
@@ -34,14 +38,14 @@ if (-not $registrados) {
 }
 
 # 2) Esperar a que haya al menos un disco registrado conectado
-$conectados = @(DiscosConectados)
+$conectados = if ($registrados) { @(DiscosConectados) } else { @() }
 $pendientes = @($registrados | Where-Object { DiscoToca $_ } | ForEach-Object { $_.Nombre })
-if (-not $DesdeBandeja -or -not $conectados) {
+if ($registrados -and (-not $DesdeBandeja -or -not $conectados)) {
     while (-not $conectados) {
         $txt = "Conecta un disco de backup y pulsa ACEPTAR.`n`nDiscos registrados: " + (($registrados | ForEach-Object { $_.Nombre }) -join ", ")
         if ($pendientes) { $txt += "`nToca copiar: " + ($pendientes -join ", ") }
         $r = Aviso ($txt + "`n`nCANCELAR = mas tarde (el icono te lo recordara).") 65
-        if ($r -ne 1) { exit }
+        if ($r -ne 1) { if ($nubes) { break } else { exit } }   # sin disco, al menos la copia en la nube
         $conectados = @(DiscosConectados)
     }
 }
@@ -175,7 +179,57 @@ foreach ($disco in $conectados) {
     if ($fallos) { $resumen += "   No se borraron:`n   " + ($fallos -join "`n   ") }
 }
 
+# ========================================================
+# 9b) COPIA EXTRA EN LA NUBE: lo imprescindible que quepa, en <carpeta sincronizada>\BackupApp
+# ========================================================
+foreach ($n in $nubes) {
+    if (-not (NubeDisponible $n)) { $resumen += "Nube '$($n.Nombre)': no se encuentra su carpeta ($($n.RaizSync))"; $hayError = $true; continue }
+    if ($SoloNube -and -not (DiscoToca $n)) { continue }
+    Add-Content $Log "===== NUBE $($n.Nombre) ($($n.RaizSync)) ====="
+    $ruta = RutaNube $n
+    New-Item -ItemType Directory -Path $ruta -Force | Out-Null
+    try { EscribirMarca $ruta $n.Id $n.Nombre } catch {}
+    MedirNube $n
+    $unidades = @(UnidadesActuales)
+    $plan = UnidadesParaNube $n $unidades (TamanosDe $unidades)
+    $errores = @(); $validos = @{}
+    foreach ($u in $plan.Seleccion) {
+        if ($u.Tipo -eq 'carpeta') {
+            $dst = Join-Path $ruta (Join-Path $u.Carpeta.Destino $u.Nombre); $validos[$dst.ToLower()] = $true
+            robocopy $u.Clave $dst /XD @Excluir /MIR /FFT /XJ /R:1 /W:2 /MT:4 /NP /NDL /LOG+:"$Log" | Out-Null
+            if ($LASTEXITCODE -ge 8) { $errores += "$($u.Clave) (codigo $LASTEXITCODE)" }
+        } else {
+            $dst = Join-Path $ruta $u.Carpeta.Destino; $validos["$($dst.ToLower())|sueltos"] = $true
+            robocopy $u.Carpeta.Origen $dst /FFT /R:1 /W:2 /NP /NDL /LOG+:"$Log" | Out-Null
+            if ($LASTEXITCODE -ge 8) { $errores += "$($u.Carpeta.Origen)\* (codigo $LASTEXITCODE)" }
+            Get-ChildItem -LiteralPath $dst -File -Force -ErrorAction SilentlyContinue |
+                Where-Object { -not (Test-Path -LiteralPath (Join-Path $u.Carpeta.Origen $_.Name)) } | Remove-Item -Force -ErrorAction SilentlyContinue
+        }
+    }
+    # Espejo, solo dentro de BackupApp: se quita lo que ya no toca subir (ya no cabe, se borro o cambio de prioridad)
+    foreach ($c in $Carpetas) {
+        $base = Join-Path $ruta $c.Destino
+        if (-not (Test-Path -LiteralPath $base)) { continue }
+        Get-ChildItem -LiteralPath $base -Directory -Force -ErrorAction SilentlyContinue | Where-Object { -not $validos.ContainsKey($_.FullName.ToLower()) } |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        if (-not $validos.ContainsKey("$($base.ToLower())|sueltos")) { Get-ChildItem -LiteralPath $base -File -Force -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue }
+    }
+    $lista = @(LeerNubes)
+    foreach ($x in $lista) { if ($x.Id -eq $n.Id) { $x.UltimaCopia = (Get-Date -Format "yyyy-MM-dd HH:mm"); $x.Ajeno = $n.Ajeno; $x.Capacidad = $n.Capacidad } }
+    GuardarNubes $lista
+    $linea = "Nube '$($n.Nombre)': $(if ($errores) { 'CON ERRORES' } else { 'correcto' }), $(@($plan.Seleccion).Count) carpetas ($(GB $plan.Bytes))"
+    if ($plan.BytesFuera -gt 0) { $linea += ". No caben $(GB $plan.BytesFuera): amplia el espacio de la nube o baja la prioridad de algo" }
+    if ((NubeActiva $n.Proveedor) -eq $false) { $linea += ". OJO: $($n.Proveedor) no esta abierto; se subira cuando lo abras" }
+    if ($errores) { $hayError = $true; $linea += "`n   " + ($errores -join "`n   ") }
+    $resumen += $linea
+}
+
 # 10) Resultado final
+if ($SoloNube) {
+    # Copia automatica: solo se avisa si algo fue mal (el icono muestra la notificacion de que ha terminado)
+    if ($hayError) { Aviso ("Copia en la nube con problemas:`n`n" + ($resumen -join "`n")) 48 | Out-Null }
+    exit
+}
 $faltan = @(LeerDiscos | Where-Object { DiscoToca $_ } | ForEach-Object { $_.Nombre })
 $txt = "Copia terminada.`n`n" + ($resumen -join "`n")
 if ($faltan) { $txt += "`n`nTodavia toca copiar: " + ($faltan -join ", ") + ". Conectalo cuando puedas." }

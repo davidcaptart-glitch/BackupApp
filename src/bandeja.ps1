@@ -15,6 +15,7 @@ Add-Type -AssemblyName System.Windows.Forms, System.Drawing, Microsoft.VisualBas
 . (Join-Path $PSScriptRoot "ui.ps1")
 . (Join-Path $PSScriptRoot "asistente.ps1")
 . (Join-Path $PSScriptRoot "actualizar.ps1")
+. (Join-Path $PSScriptRoot "optimizar.ps1")
 [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'Idle'
 
 $ScriptBackup = Join-Path $PSScriptRoot "backup_mensual.ps1"
@@ -28,6 +29,7 @@ if (Test-Path $FicheroPend) {
 }
 $script:sucio = $false; $script:desbordado = $false; $script:ticks = 0
 $script:ultimoRecordatorio = [datetime]::MinValue
+$script:copiaNube = $false; $script:intentoNube = [datetime]::MinValue
 $script:accionClic = $null
 $script:proceso = $null; $script:medidor = $null; $script:medidorAntes = $false
 $script:intentoMedicion = [datetime]::MinValue
@@ -53,10 +55,12 @@ function Avisar($titulo, $texto, $accion) {
     $icono.ShowBalloonTip(15000, $titulo, $texto, [Windows.Forms.ToolTipIcon]::Info)
 }
 function Copiando { $script:proceso -and -not $script:proceso.HasExited }
-function LanzarCopia {
-    if (Copiando) { Avisar "Backup" "Ya hay una copia en marcha." $null; return }
+function LanzarCopia([switch]$SoloNube) {
+    if (Copiando) { if (-not $SoloNube) { Avisar "Backup" "Ya hay una copia en marcha." $null }; return }
+    $modo = if ($SoloNube) { "-SoloNube" } else { "-DesdeBandeja" }
+    $script:copiaNube = [bool]$SoloNube -or [bool]@(LeerNubes).Count
     $script:proceso = Start-Process powershell.exe -PassThru -ArgumentList `
-        "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$ScriptBackup`" -DesdeBandeja"
+        "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$ScriptBackup`" $modo"
     try { $script:proceso.PriorityClass = 'BelowNormal' } catch {}
 }
 
@@ -117,13 +121,14 @@ $miDiscos = MI "Discos de backup"
 $miTam    = MI "Tamano de las carpetas..."
 $miPlan   = MI "Plan de copias..."
 $miAsis   = MI "Asistente de configuracion..."
+$miLiberar = MI "Liberar espacio..."
 $miAnadir = MI "Anadir carpeta..."
 $miQuitar = MI "Quitar carpeta"
 $miLogs   = MI "Abrir registros"
 $miActual = MI "Buscar actualizaciones..."
 $miSalir  = MI "Salir"
 [void]$miDiscos.DropDownItems.Add("(cargando)"); [void]$miQuitar.DropDownItems.Add("(cargando)")
-[void]$menu.Items.AddRange(@($miVersion, $miEstado,(SEP), $miCopiar, $miDiscos, $miPlan, $miTam, (SEP), $miAsis, $miAnadir, $miQuitar, (SEP), $miActual, $miLogs, $miSalir))
+[void]$menu.Items.AddRange(@($miVersion, $miEstado,(SEP), $miCopiar, $miDiscos, $miPlan, $miTam, $miLiberar, (SEP), $miAsis, $miAnadir, $miQuitar, (SEP), $miActual, $miLogs, $miSalir))
 $icono.ContextMenuStrip = $menu
 
 $miCopiar.add_Click({ LanzarCopia })
@@ -137,6 +142,7 @@ $icono.add_BalloonTipClicked({
     elseif ($a -eq 'tamanos')       { MostrarTamanos }
     elseif ($a -eq 'plan')          { MostrarPlan }
     elseif ($a -eq 'asistente')     { AbrirAsistente }
+    elseif ($a -eq 'liberar')       { MostrarLiberarEspacio }
     elseif ($a -eq 'actualizar' -and $script:releaseNueva) { MostrarNovedades $script:releaseNueva }
     elseif ($a -like 'registrar:*') { RegistrarDesdeLetra $a.Substring(10) }
 })
@@ -182,6 +188,11 @@ function RenombrarDesdeMenu($id) {
     RenombrarDiscoRegistrado $id $n
     $script:discosCache = @(LeerDiscos); $script:marcaDiscos = (Get-Item $FicheroDiscos).LastWriteTime
 }
+function OlvidarNube($id) {
+    $n = LeerNubes | Where-Object { $_.Id -eq $id } | Select-Object -First 1
+    if ((Dialogo $null "Dejar de copiar en $($n.Nombre)" "BackupApp dejará de copiar en la nube. Lo que ya hay en $(RutaNube $n) no se borra; puedes borrarlo tú si quieres liberar espacio." @('Cancelar', 'Dejar de copiar') 'Dejar de copiar') -ne 'Dejar de copiar') { return }
+    GuardarNubes @(LeerNubes | Where-Object { $_.Id -ne $id })
+}
 function MenuDiscos {
     $miDiscos.DropDownItems.Clear()
     $con = @(DiscosConectados)
@@ -200,7 +211,14 @@ function MenuDiscos {
         [void]$it.DropDownItems.Add($ol)
         [void]$miDiscos.DropDownItems.Add($it)
     }
-    if ($script:discosCache) { [void]$miDiscos.DropDownItems.Add((SEP)) }
+    foreach ($n in @(LeerNubes)) {
+        $ult = if ($n.UltimaCopia) { "copia " + $n.UltimaCopia.Substring(0, 10) } else { "sin copias" }
+        $it = MI "$($n.Nombre) (nube)  -  $(if (NubeDisponible $n) { $ult } else { 'carpeta no encontrada' })"
+        if (NubeDisponible $n) { $ab = MI "Abrir carpeta"; $ab.Tag = (RutaNube $n); $ab.add_Click({ param($s, $e) New-Item -ItemType Directory -Path $s.Tag -Force | Out-Null; Start-Process explorer.exe $s.Tag }); [void]$it.DropDownItems.Add($ab) }
+        $ol = MI "Dejar de copiar aquí"; $ol.Tag = $n.Id; $ol.add_Click({ param($s, $e) OlvidarNube $s.Tag }); [void]$it.DropDownItems.Add($ol)
+        [void]$miDiscos.DropDownItems.Add($it)
+    }
+    if ($script:discosCache -or @(LeerNubes)) { [void]$miDiscos.DropDownItems.Add((SEP)) }
     $reg = MI "Registrar disco conectado"
     $cands = @(DiscosCandidatos)
     foreach ($dr in $cands) {
@@ -440,7 +458,9 @@ function MostrarPlan {
         $ult = if ($d.UltimaCopia) { "última copia $($d.UltimaCopia.Substring(0, 10))" } else { "sin copias aún" }
         [pscustomobject]@{ Id = $d.Id; Detalle = "$(if ($c) { "conectado en $($c.Letra)" } else { 'no conectado' })  $([char]0x00B7)  $ult" }
     }
-    PintarPlan $w.FindName('ListaPlan') (PlanDeCopias $discos $rep (TamanosDe @(UnidadesActuales))) 0 $info
+    $unidades = @(UnidadesActuales); $tam = TamanosDe $unidades
+    $np = @(foreach ($n in @(LeerNubes | Where-Object { NubeDisponible $_ })) { $n | Add-Member -NotePropertyName Activa -NotePropertyValue (NubeActiva $n.Proveedor) -Force; [pscustomobject]@{ Nube = $n; P = (UnidadesParaNube $n $unidades $tam) } })
+    PintarPlan $w.FindName('ListaPlan') (PlanDeCopias $discos $rep $tam) 0 $info $np
     $w.Cursor = $null
     $script:discosCache = @(LeerDiscos)
 }
@@ -460,6 +480,8 @@ function AsistenteTerminado {
     else { Avisar "Plan guardado" "Conecta tu disco de backup cuando quieras: te avisare para copiar." $null }
 }
 $miAsis.add_Click({ AbrirAsistente })
+$miLiberar.add_Click({ MostrarLiberarEspacio })
+$script:revisandoEspacio = $false
 
 # ---------- Actualizaciones ----------
 $script:releaseNueva = $null; $script:busquedaManual = $false
@@ -499,6 +521,38 @@ function Revisar {
     # a2) Busqueda diaria de actualizaciones (2 minutos despues de arrancar)
     if ($script:ticks -ge 8 -and -not (Copiando) -and (LeerAjuste 'UltimaBusqueda') -ne (Get-Date -Format 'yyyy-MM-dd')) {
         GuardarAjuste 'UltimaBusqueda' (Get-Date -Format 'yyyy-MM-dd'); IniciarBusqueda $false
+    }
+
+    # a3) Copia semanal en la nube, sola y en segundo plano (como mucho un intento por hora)
+    if ($script:copiaNube -and -not (Copiando)) {
+        $script:copiaNube = $false
+        $hoy = Get-Date -Format 'yyyy-MM-dd'
+        $hechas = @(LeerNubes | Where-Object { "$($_.UltimaCopia)".StartsWith($hoy) })
+        if ($hechas) { Avisar "Copia en la nube al día" "$(($hechas | ForEach-Object { $_.Nombre }) -join ', '): ya está en su carpeta y el programa de cada servicio la está subiendo." $null }
+    }
+    if ($script:ticks -ge 40 -and -not (Copiando) -and ((Get-Date) - $script:intentoNube).TotalMinutes -ge 60) {
+        if (@(LeerNubes | Where-Object { (NubeDisponible $_) -and (DiscoToca $_) })) { $script:intentoNube = Get-Date; LanzarCopia -SoloNube }
+    }
+
+    # a4) Avisos de optimizacion: una revision rapida al dia (15 min despues de arrancar). Se avisa si el disco del
+    #     sistema tiene menos del 10 % libre, o si hay 5 GB o mas que liberar (como mucho una vez por semana).
+    if ($script:revisandoEspacio) {
+        if (-not $script:busquedaOpt -and -not ($script:opt -and $script:opt.Win.IsVisible)) { $script:revisandoEspacio = $false }
+        $r = ResultadoOportunidades
+        if ($null -ne $r) {
+            $script:revisandoEspacio = $false
+            $total = [int64](($r | Measure-Object Bytes -Sum).Sum)
+            $sis = @(EstadoUnidades | Where-Object { $_.Letra -eq $env:SystemDrive -and $_.PocoEspacio }) | Select-Object -First 1
+            $ult = LeerAjuste 'UltimoAvisoEspacio' '2000-01-01'
+            $dias = ((Get-Date) - [datetime]::ParseExact($ult, 'yyyy-MM-dd', $null)).TotalDays
+            if (($sis -and $dias -ge 1) -or ($total -ge 5GB -and $dias -ge 7)) {
+                GuardarAjuste 'UltimoAvisoEspacio' (Get-Date -Format 'yyyy-MM-dd')
+                if ($sis) { Avisar "Queda poco espacio en $($sis.Letra)" "Solo $(FmtTam $sis.Libre) libres. Puedes liberar $(FmtTam $total) sin perder nada importante: haz clic aquí." 'liberar' }
+                else { Avisar "Puedes liberar $(FmtTam $total)" "Papelera, temporales, cachés y descargas antiguas. Haz clic para revisarlo; no se borra nada sin preguntar." 'liberar' }
+            }
+        }
+    } elseif ($script:ticks -ge 60 -and -not (Copiando) -and (LeerAjuste 'UltimaRevisionEspacio') -ne (Get-Date -Format 'yyyy-MM-dd')) {
+        GuardarAjuste 'UltimaRevisionEspacio' (Get-Date -Format 'yyyy-MM-dd'); $script:revisandoEspacio = $true; BuscarOportunidadesEnSegundoPlano
     }
 
     # b) Ha terminado la copia de algun disco? -> quitar sus cambios pendientes

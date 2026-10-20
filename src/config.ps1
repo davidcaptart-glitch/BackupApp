@@ -35,6 +35,8 @@ $FicheroPend     = Join-Path $Datos "pendientes.txt"      # cambios vistos y aun
 $FicheroSalir    = Join-Path $Datos "salir.senal"         # si aparece, el icono guarda y se cierra (instalador, actualizaciones)
 $MarcaDisco      = ".disco_backup"                        # fichero que identifica cada disco
 $FicheroAjustes  = Join-Path $Datos "ajustes.json"        # preferencias del usuario (tema...)
+$FicheroNubes    = Join-Path $Datos "nubes.csv"           # carpetas en la nube (OneDrive, Dropbox...) usadas como copia extra
+$CarpetaNube     = "BackupApp"                            # subcarpeta que se crea dentro de cada carpeta sincronizada
 
 $Version = "0.0.0"
 foreach ($v in @((Join-Path $Codigo "VERSION"), (Join-Path (Split-Path $Codigo -Parent) "VERSION"))) {
@@ -173,8 +175,14 @@ function GuardarDiscos($lista) {
         Export-Csv $FicheroDiscos -Delimiter ';' -NoTypeInformation -Encoding UTF8
 }
 function UnidadesDeDisco {
-    # Letras de unidad utiles (sin CD ni red, que pueden bloquearse)
-    [IO.DriveInfo]::GetDrives() | Where-Object { ($_.DriveType -eq 'Removable' -or $_.DriveType -eq 'Fixed') -and $_.IsReady }
+    # Letras de unidad utiles (sin CD ni red, que pueden bloquearse). Se descarta la unidad virtual de Google Drive,
+    # que es una nube y no un disco.
+    [IO.DriveInfo]::GetDrives() | Where-Object { ($_.DriveType -eq 'Removable' -or $_.DriveType -eq 'Fixed') -and $_.IsReady -and -not (EsUnidadGoogle $_) }
+}
+function EsUnidadGoogle($dr) {
+    if ($dr.VolumeLabel -eq 'Google Drive') { return $true }
+    foreach ($n in 'Mi unidad', 'My Drive') { if (Test-Path -LiteralPath (Join-Path $dr.RootDirectory.FullName $n)) { return $true } }
+    return $false
 }
 function InfoDiscos {
     # Todas las unidades utiles del PC con lo que el asistente necesita saber de cada una
@@ -431,4 +439,146 @@ function TextoPlan($plan) {
     if ($plan.Comprar) { $l.Add("RECOMENDACION: compra un disco externo de $(TamComercial $plan.Comprar) (NTFS) y registralo.") }
     else { $l.Add("Tus discos tienen sitio suficiente por ahora.") }
     return ($l -join "`r`n")
+}
+
+# ---------- Copia extra en la nube ----------
+# Una "nube" es la carpeta que sincroniza un programa (OneDrive, Dropbox, Google Drive...). BackupApp copia en
+# <carpeta>\BackupApp lo mas importante que quepa en el espacio contratado y el programa de cada servicio lo sube.
+# Es una copia ADICIONAL a la de los discos: no cambia el reparto. Nunca se copia a una nube lo que ya esta en ella.
+function LeerNubes {
+    if (-not (Test-Path $FicheroNubes)) { return @() }
+    @(Import-Csv $FicheroNubes -Delimiter ';')
+}
+function GuardarNubes($lista) {
+    # Prioridad = hasta que prioridad se copia (1 = solo imprescindible, 2 = tambien lo normal)
+    @($lista) | Select-Object Id, Nombre, Proveedor, RaizSync, Capacidad, Prioridad, UltimaCopia, Dias, Ajeno |
+        Export-Csv $FicheroNubes -Delimiter ';' -NoTypeInformation -Encoding UTF8
+}
+function RutaNube($n) { Join-Path $n.RaizSync $CarpetaNube }
+function NubeDisponible($n) { $n.RaizSync -and (Test-Path -LiteralPath $n.RaizSync) }
+# Servicios conocidos: espacio gratis aproximado (para proponer la cuota) y descarga oficial de su programa de escritorio
+$ServiciosNube = @(
+    [pscustomobject]@{ Proveedor = 'Google Drive'; Gratis = 15GB; Url = 'https://www.google.com/drive/download/' }
+    [pscustomobject]@{ Proveedor = 'OneDrive';     Gratis = 5GB;  Url = 'https://www.microsoft.com/microsoft-365/onedrive/download' }
+    [pscustomobject]@{ Proveedor = 'Dropbox';      Gratis = 2GB;  Url = 'https://www.dropbox.com/install' }
+    [pscustomobject]@{ Proveedor = 'iCloud';       Gratis = 5GB;  Url = 'https://apps.microsoft.com/detail/9pktq5699m62' }
+    [pscustomobject]@{ Proveedor = 'MEGA';         Gratis = 20GB; Url = 'https://mega.io/desktop' }
+    [pscustomobject]@{ Proveedor = 'pCloud';       Gratis = 10GB; Url = 'https://www.pcloud.com/download-free-online-cloud-file-storage.html' }
+    [pscustomobject]@{ Proveedor = 'Proton Drive'; Gratis = 5GB;  Url = 'https://proton.me/drive/download' }
+    [pscustomobject]@{ Proveedor = 'Box';          Gratis = 10GB; Url = 'https://www.box.com/resources/downloads' }
+)
+# Amazon Photos no sincroniza una carpeta: su programa sube el mismo las carpetas que le indiques ("copia directa").
+# Con Prime guarda fotos sin limite a resolucion completa, tambien RAW (ARW, CR2, NEF...); los videos, 5 GB.
+$AmazonPhotos = [pscustomobject]@{ Proveedor = 'Amazon Photos'; Url = 'https://www.amazon.com/photos'; Nota = 'Fotos sin límite con Prime, también RAW' }
+function RutaAmazonPhotos {
+    foreach ($p in "$env:LOCALAPPDATA\Amazon Drive\AmazonPhotos.exe", "$env:LOCALAPPDATA\Amazon Photos\AmazonPhotos.exe", "$env:ProgramFiles\Amazon Photos\AmazonPhotos.exe") {
+        if (Test-Path -LiteralPath $p) { return $p }
+    }
+    return $null
+}
+function DetectarNubes {
+    # Carpetas sincronizadas de los servicios instalados en este PC. Cada servicio guarda su carpeta en un sitio
+    # distinto; si no se encuentra, el usuario puede elegirla a mano ("Otra carpeta en la nube o NAS").
+    $vistos = @{}
+    function Nube($prov, $nombre, $raiz, $cuota = $null, $libre = $null) {
+        if (-not $raiz) { return }
+        $raiz = [Environment]::ExpandEnvironmentVariables("$raiz").TrimEnd('\')
+        if (-not (Test-Path -LiteralPath $raiz -PathType Container)) { return }
+        $k = $raiz.ToLower(); if ($vistos.ContainsKey($k)) { return }; $vistos[$k] = $true
+        $marca = Join-Path (Join-Path $raiz $CarpetaNube) $MarcaDisco
+        $id = if (Test-Path -LiteralPath $marca) { "$(@([IO.File]::ReadAllLines($marca))[0])".Trim() } else { $null }
+        [pscustomobject]@{ Proveedor = $prov; Nombre = $nombre; RaizSync = $raiz; Cuota = $cuota; Libre = $libre; IdMarca = $id; Activa = (NubeActiva $prov) }
+    }
+    # OneDrive: una clave por cuenta (Personal, Business1, Business2...) con su carpeta en UserFolder
+    foreach ($k in @(Get-ChildItem 'HKCU:\Software\Microsoft\OneDrive\Accounts' -ErrorAction SilentlyContinue)) {
+        $p = Get-ItemProperty $k.PSPath -ErrorAction SilentlyContinue
+        # El nombre de la carpeta ya dice si es la personal ("OneDrive") o una de empresa ("OneDrive - Empresa")
+        if ($p.UserFolder) { Nube 'OneDrive' (Split-Path $p.UserFolder -Leaf) $p.UserFolder }
+    }
+    foreach ($p in $env:OneDriveCommercial, $env:OneDriveConsumer, $env:OneDrive) { if ($p) { Nube 'OneDrive' (Split-Path $p -Leaf) $p } }
+    # Google Drive para escritorio: unidad virtual (G: por defecto) con "Mi unidad"; la cuota la da la propia unidad.
+    # La letra o ruta puede estar en DefaultMountPoint. En modo "replicar" la carpeta esta en el perfil del usuario.
+    $montajes = @(foreach ($r in 'HKCU:\Software\Google\DriveFS', 'HKLM:\Software\Google\DriveFS', 'HKLM:\Software\Policies\Google\DriveFS') { (Get-ItemProperty $r -ErrorAction SilentlyContinue).DefaultMountPoint })
+    foreach ($dr in [IO.DriveInfo]::GetDrives()) {
+        if ($dr.DriveType -ne 'Fixed' -or -not $dr.IsReady) { continue }
+        if ((EsUnidadGoogle $dr) -or $montajes -contains $dr.Name.Substring(0, 1) -or $montajes -contains $dr.Name.Substring(0, 2)) {
+            foreach ($n in 'Mi unidad', 'My Drive') { Nube 'Google Drive' 'Google Drive' (Join-Path $dr.RootDirectory.FullName $n) ([int64]$dr.TotalSize) ([int64]$dr.AvailableFreeSpace) }
+        }
+    }
+    foreach ($m in $montajes) { if ($m -and $m.Length -gt 3) { foreach ($n in 'Mi unidad', 'My Drive') { Nube 'Google Drive' 'Google Drive' (Join-Path ([Environment]::ExpandEnvironmentVariables($m)) $n) } } }
+    foreach ($n in 'Mi unidad', 'My Drive', 'Google Drive') { Nube 'Google Drive' 'Google Drive' "$env:USERPROFILE\$n" }
+    # Dropbox: %LOCALAPPDATA%\Dropbox\info.json (o en %APPDATA%) con las rutas de las cuentas personal y de empresa
+    foreach ($j in "$env:LOCALAPPDATA\Dropbox\info.json", "$env:APPDATA\Dropbox\info.json") {
+        if (-not (Test-Path -LiteralPath $j)) { continue }
+        try { $i = [IO.File]::ReadAllText($j) | ConvertFrom-Json } catch { continue }
+        Nube 'Dropbox' 'Dropbox' $i.personal.path
+        Nube 'Dropbox' 'Dropbox (empresa)' $i.business.path
+    }
+    Nube 'Dropbox' 'Dropbox' "$env:USERPROFILE\Dropbox"
+    # iCloud para Windows: "iCloud Drive" en el perfil (versiones antiguas: iCloudDrive)
+    Nube 'iCloud' 'iCloud Drive' "$env:USERPROFILE\iCloud Drive"
+    Nube 'iCloud' 'iCloud Drive' "$env:USERPROFILE\iCloudDrive"
+    # pCloud Drive: unidad virtual (P: por defecto) que tambien da su cuota
+    foreach ($dr in [IO.DriveInfo]::GetDrives()) {
+        if ($dr.IsReady -and $dr.VolumeLabel -like 'pCloud*') { Nube 'pCloud' 'pCloud Drive' $dr.RootDirectory.FullName ([int64]$dr.TotalSize) ([int64]$dr.AvailableFreeSpace) }
+    }
+    # Box Drive, MEGA, Proton Drive y Sync.com: carpeta en el perfil del usuario
+    Nube 'Box' 'Box' "$env:USERPROFILE\Box"
+    Nube 'MEGA' 'MEGA' "$env:USERPROFILE\MEGA"
+    Nube 'MEGA' 'MEGA' "$env:USERPROFILE\Documents\MEGA"
+    foreach ($p in @(Get-ChildItem "$env:USERPROFILE" -Directory -Filter 'Proton Drive*' -ErrorAction SilentlyContinue)) { Nube 'Proton Drive' 'Proton Drive' $p.FullName }
+    Nube 'Sync.com' 'Sync.com' "$env:USERPROFILE\Sync"
+    # Nextcloud: carpetas en %APPDATA%\Nextcloud\nextcloud.cfg (lineas ...\localPath=)
+    $cfg = "$env:APPDATA\Nextcloud\nextcloud.cfg"
+    if (Test-Path -LiteralPath $cfg) { foreach ($l in [IO.File]::ReadAllLines($cfg)) { if ($l -match '\\localPath=(.+)$') { Nube 'Nextcloud' 'Nextcloud' ($Matches[1].Trim() -replace '/', '\') } } }
+    Nube 'Nextcloud' 'Nextcloud' "$env:USERPROFILE\Nextcloud"
+}
+function NubeElegida($ruta) {
+    # Carpeta sincronizada elegida a mano (otro servicio, un NAS...). Se intenta adivinar el servicio por la ruta.
+    $prov = 'Otra nube'
+    foreach ($s in $ServiciosNube) { if ($ruta -match [regex]::Escape($s.Proveedor)) { $prov = $s.Proveedor } }
+    $marca = Join-Path (Join-Path $ruta $CarpetaNube) $MarcaDisco
+    $id = if (Test-Path -LiteralPath $marca) { "$(@([IO.File]::ReadAllLines($marca))[0])".Trim() } else { $null }
+    [pscustomobject]@{ Proveedor = $prov; Nombre = (Split-Path $ruta -Leaf); RaizSync = $ruta.TrimEnd('\'); Cuota = $null; Libre = $null; IdMarca = $id; Activa = (NubeActiva $prov) }
+}
+# Programa de cada servicio: si no esta abierto, lo que se copie en su carpeta no se sube
+$ProcesosNube = @{ 'OneDrive' = @('OneDrive'); 'Google Drive' = @('GoogleDriveFS'); 'Dropbox' = @('Dropbox'); 'iCloud' = @('iCloudDrive', 'iCloudServices', 'iCloudHome')
+                   'MEGA' = @('MEGAsync'); 'pCloud' = @('pCloud'); 'Proton Drive' = @('ProtonDrive', 'Proton Drive'); 'Box' = @('Box')
+                   'Sync.com' = @('Sync', 'SyncTaskbar'); 'Nextcloud' = @('nextcloud') }
+function NubeActiva($prov) {
+    # $null si no se sabe (servicio desconocido o NAS), $true/$false segun este abierto su programa
+    if (-not $ProcesosNube.ContainsKey($prov)) { return $null }
+    return [bool](Get-Process -Name $ProcesosNube[$prov] -ErrorAction SilentlyContinue | Select-Object -First 1)
+}
+function CuotaSugerida($prov) { $s = $ServiciosNube | Where-Object { $_.Proveedor -eq $prov } | Select-Object -First 1; if ($s) { $s.Gratis } else { 0 } }function AjenoNube($raizSync, $cuota = $null, $libre = $null) {
+    # Lo que ya ocupa la cuenta sin contar la copia de BackupApp. Si la nube da su cuota (Google Drive) se usa;
+    # si no, se mide la carpeta sincronizada (solo lee nombres y tamanos, no descarga nada).
+    $nuestro = $(if (Test-Path -LiteralPath (Join-Path $raizSync $CarpetaNube)) { (Analizar (Join-Path $raizSync $CarpetaNube)).Bytes } else { 0 })
+    $usado = if ($cuota -and $null -ne $libre) { [int64]$cuota - [int64]$libre } else { (Analizar $raizSync).Bytes }
+    return [math]::Max([int64]0, [int64]$usado - [int64]$nuestro)
+}
+function MedirNube($n) {
+    # Actualiza Ajeno (y Capacidad, si la nube la da como unidad virtual: Google Drive, pCloud)
+    $q = try { Split-Path -Qualifier $n.RaizSync } catch { $null }
+    $dr = if ($q) { New-Object IO.DriveInfo $q } else { $null }
+    if ($dr -and $dr.IsReady -and ((EsUnidadGoogle $dr) -or $dr.VolumeLabel -like 'pCloud*')) {
+        $n.Capacidad = [int64]$dr.TotalSize; $n.Ajeno = AjenoNube $n.RaizSync $dr.TotalSize $dr.AvailableFreeSpace
+    } else { $n.Ajeno = AjenoNube $n.RaizSync }
+}
+function UnidadesParaNube($n, $unidades, $tam) {
+    # Que se copia a una nube: las unidades de prioridad <= $n.Prioridad que quepan, de mas a menos prioridad y,
+    # dentro de cada una, de pequenas a grandes (para que quepan enteras el mayor numero de carpetas).
+    $util = [int64]([int64]$n.Capacidad * (1 - $MargenDisco)) - [int64]$n.Ajeno
+    $max = if ([int]$n.Prioridad -gt 0) { [int]$n.Prioridad } else { 1 }
+    $sel = @(); $fuera = @(); $ya = @(); $bytes = [int64]0
+    $cands = @($unidades | Where-Object { $_.Carpeta.Prioridad -le $max })
+    foreach ($u in ($cands | Sort-Object { $_.Carpeta.Prioridad }, { [int64]$tam[$_.Clave] })) {
+        $c = $u.Carpeta.Origen
+        # Ya esta en esta nube, o la carpeta de origen contiene la propia nube (se copiaria dentro de si misma)
+        if ((DentroDe $c $n.RaizSync) -or (DentroDe $n.RaizSync $c)) { $ya += $u; continue }
+        $t = [int64]$tam[$u.Clave]
+        if ($bytes + $t -le $util) { $sel += $u; $bytes += $t } else { $fuera += $u }
+    }
+    [pscustomobject]@{ Seleccion = $sel; Fuera = $fuera; YaEnNube = $ya; Bytes = $bytes; Util = [math]::Max([int64]0, $util)
+                       BytesFuera = [int64](($fuera | ForEach-Object { [int64]$tam[$_.Clave] } | Measure-Object -Sum).Sum) }
 }
