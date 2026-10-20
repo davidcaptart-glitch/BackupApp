@@ -1,5 +1,8 @@
 # Cambios
 
+## 0.4.8
+- Arreglado: si había una copia en marcha, la actualización no se podía instalar porque la ventana de la copia tenía abierto el icono.
+
 ## 0.4.7
 - La ventana de la copia muestra el progreso en GB, el archivo que se está copiando, la velocidad y el tiempo que falta (antes solo contaba carpetas y parecía parada en las grandes).
 - Copia más rápida en discos duros: copia de dos en dos archivos en vez de ocho, que en discos que no son SSD hacía saltar al cabezal.

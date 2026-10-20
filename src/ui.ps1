@@ -288,7 +288,8 @@ function NuevaVentana($xaml) {
     if (-not $script:Estilos) { $script:Estilos = [Windows.Markup.XamlReader]::Parse($EstilosXaml) }
     $w.Resources.MergedDictionaries.Add($script:Estilos)
     AplicarTema $w
-    $ico = RutaRecurso "BackupApp.ico"; if ($ico) { try { $w.Icon = [Windows.Media.Imaging.BitmapFrame]::Create((New-Object Uri $ico)) } catch {} }
+    # El icono se carga en memoria (OnLoad): si se leyera del archivo, quedaria abierto y el instalador no podria actualizarlo
+    $ico = RutaRecurso "BackupApp.ico"; if ($ico) { try { $w.Icon = [Windows.Media.Imaging.BitmapFrame]::Create((New-Object Uri $ico), [Windows.Media.Imaging.BitmapCreateOptions]::None, [Windows.Media.Imaging.BitmapCacheOption]::OnLoad) } catch {} }
     $w.add_SourceInitialized({ param($s, $e) BarraTituloOscura $s ($s.Tag -eq 'Oscuro') })
     $w.add_Closed({ param($s, $e) [void]$script:VentanasUI.Remove($s) })
     $script:VentanasUI.Add($w)
