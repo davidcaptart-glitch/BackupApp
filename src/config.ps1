@@ -476,7 +476,7 @@ $ServiciosNube = @(
 )
 # Amazon Photos no sincroniza una carpeta: su programa sube el mismo las carpetas que le indiques ("copia directa").
 # Con Prime guarda fotos sin limite a resolucion completa, tambien RAW (ARW, CR2, NEF...); los videos, 5 GB.
-$AmazonPhotos = [pscustomobject]@{ Proveedor = 'Amazon Photos'; Url = 'https://www.amazon.com/photos'; Nota = 'Fotos sin límite con Prime, también RAW' }
+$AmazonPhotos = [pscustomobject]@{ Proveedor = 'Amazon Photos'; Url = 'https://www.amazon.es/photos'; Nota = 'Fotos sin límite con Prime, también RAW' }
 function RutaAmazonPhotos {
     foreach ($p in "$env:LOCALAPPDATA\Amazon Drive\AmazonPhotos.exe", "$env:LOCALAPPDATA\Amazon Photos\AmazonPhotos.exe", "$env:ProgramFiles\Amazon Photos\AmazonPhotos.exe") {
         if (Test-Path -LiteralPath $p) { return $p }

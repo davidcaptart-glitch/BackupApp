@@ -1,5 +1,10 @@
 # Cambios
 
+## 0.4.2
+- Todas las nubes se conectan directamente desde BackupApp, sin instalar nada: Google Drive, Dropbox, OneDrive, pCloud, Box, MEGA, Proton Drive y Backblaze B2.
+- La barra de tareas muestra el icono de BackupApp en sus ventanas (antes salía el de PowerShell).
+- Explicación más clara de Amazon Photos e iCloud, que no permiten conectarse desde otros programas.
+
 ## 0.4.1
 - BackupApp es software libre (licencia GPL-3.0).
 - El instalador explica qué hace el programa con Internet (solo actualizaciones y, si la activas, la nube directa) y se compila en GitHub a partir del código.

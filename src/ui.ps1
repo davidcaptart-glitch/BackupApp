@@ -10,8 +10,13 @@ Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 if (-not ("BackupApp.Dwm" -as [type])) {
     Add-Type -Namespace BackupApp -Name Dwm -MemberDefinition @'
 [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+[DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern int SetCurrentProcessExplicitAppUserModelID(string id);
 '@
 }
+# Identificador de aplicacion: asi Windows agrupa las ventanas en la barra de tareas como "BackupApp" y con su icono,
+# no como PowerShell. Los accesos directos del instalador llevan el mismo (instalador\BackupApp.iss).
+$IdAplicacion = "davidcaptart.BackupApp"
+[void][BackupApp.Dwm]::SetCurrentProcessExplicitAppUserModelID($IdAplicacion)
 if (-not ("BackupApp.RenderMenu" -as [type])) {
     Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -TypeDefinition @'
 using System.Drawing;

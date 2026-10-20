@@ -314,32 +314,39 @@ function TarjetaAmazon($exe) {
     return (Tarjeta $f)
 }
 function PintarComoConectar {
-    # Servicios populares que no estan en este PC: como conectarlos
+    # Servicios que se pueden conectar directamente, sin instalar nada (rclone se descarga solo la primera vez)
     $p = $script:asis.Win.FindName('ComoConectar'); $p.Children.Clear()
-    $hay = @($script:asis.FilasNubes | Where-Object { $_.Info } | ForEach-Object { $_.Info.Proveedor })
-    $faltan = @($ServiciosNube | Where-Object { $hay -notcontains $_.Proveedor })
-    if (-not (RutaAmazonPhotos)) { $faltan += $AmazonPhotos }
-    if (-not $faltan) { return }
-    [void]$p.Children.Add((Texto "Cómo conectar otra nube" 14 'SemiBold'))
-    $x = Texto "Instala el programa de escritorio del servicio, inicia sesión y pulsa Actualizar: BackupApp encontrará su carpeta. Si usas otro servicio o un NAS, elige su carpeta con el botón de arriba." 12 'Normal' 'Texto2'
+    $hay = @($script:asis.FilasNubes | Where-Object { $_.Info -and $_.Info.Tipo -eq 'rclone' } | ForEach-Object { $_.Info.Proveedor })
+    [void]$p.Children.Add((Texto "Conectar otra nube (opcional)" 14 'SemiBold'))
+    $x = Texto "No hace falta instalar nada: pulsa Conectar, inicia sesión y listo. La copia va directa a tu cuenta y, si quieres, cifrada con tu contraseña." 12 'Normal' 'Texto2'
     $x.Margin = '0,2,0,10'; [void]$p.Children.Add($x)
     $g = New-Object Windows.Controls.Primitives.UniformGrid; $g.Columns = 2
-    foreach ($s in $faltan) {
-        $b = New-Object Windows.Controls.Button; $b.Style = $script:Estilos['Enlace']; $b.Content = "Descargar"; $b.Tag = $s.Url
-        $b.add_Click({ param($s, $e) Start-Process $s.Tag })
-        $nota = if ($s.Nota) { $s.Nota } else { "$(TamTxt $s.Gratis) gratis" }
-        $f = Fila @((Icono $GlifoNube 16), (Apilar @((Texto $s.Proveedor 13 'SemiBold'), (Texto $nota 11.5 'Normal' 'Texto2'))), $b) @('Auto', '*', 'Auto')
+    foreach ($s in $ServiciosRclone) {
+        $gratis = ($ServiciosNube | Where-Object { $_.Proveedor -eq $s.Nombre } | Select-Object -First 1).Gratis
+        $nota = if ($hay -contains $s.Nombre) { "Ya conectado" } elseif ($s.Tipo -eq 'b2') { "Pagas solo lo que usas" } elseif ($s.Tipo -eq 'protondrive') { "Cifrado de extremo a extremo" } elseif ($gratis) { "$(TamTxt $gratis) gratis" } else { "" }
+        $b = New-Object Windows.Controls.Button; $b.Style = $script:Estilos['Enlace']; $b.Content = "Conectar"; $b.Tag = $s.Tipo
+        $b.add_Click({ param($x, $e) MostrarConectarDirecta $x.Tag })
+        $f = Fila @((Icono $GlifoNube 16 'Acento'), (Apilar @((Texto $s.Nombre 13 'SemiBold'), (Texto $nota 11.5 'Normal' 'Texto2'))), $b) @('Auto', '*', 'Auto')
         $f.Children[1].Margin = '10,0,10,0'
         $c = Tarjeta $f; $c.Margin = '0,0,8,8'; $c.Padding = '14,8'
         [void]$g.Children.Add($c)
     }
     [void]$p.Children.Add($g)
-}
-$XamlDirecta = @"
+    # Los que no dejan conectarse desde otros programas
+    $b = New-Object Windows.Controls.Button; $b.Style = $script:Estilos['Enlace']; $b.Content = "Qué es Amazon Photos"; $b.Tag = $AmazonPhotos.Url
+    $b.add_Click({ param($x, $e)
+        $r = Dialogo $script:asis.Win "Amazon Photos (opcional)" ("No hace falta para BackupApp. Si tienes Prime, guarda tus fotos sin límite y a resolución completa, también en RAW (ARW, CR2, NEF...); los vídeos, hasta 5 GB.`n`n" +
+             "Amazon no permite que otros programas suban a Amazon Photos, así que BackupApp no puede conectarse directamente. Si lo quieres, usa su programa de escritorio (desde la web de Amazon Photos, con tu cuenta de Amazon): Copia de seguridad > Añadir carpeta y elige tu carpeta de fotos.") @('Cerrar', 'Abrir Amazon Photos') 'Abrir Amazon Photos'
+        if ($r -eq 'Abrir Amazon Photos') { Start-Process $x.Tag }
+    })
+    $n = Fila @((Texto "iCloud y Amazon Photos no permiten conectarse desde otros programas: si los usas, necesitan su propio programa (BackupApp encontrará la carpeta de iCloud si lo tienes instalado)." 11.5 'Normal' 'Texto2'), $b) @('*', 'Auto')
+    $n.Children[1].Margin = '12,0,0,0'; $n.Margin = '2,4,0,0'
+    [void]$p.Children.Add($n)
+}$XamlDirecta = @"
 <Window $VentanaBase Title="Conectar una nube" Width="620" SizeToContent="Height" ResizeMode="NoResize" WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
   <StackPanel Margin="28,24,28,22">
     <TextBlock Text="Conectar una cuenta directamente" FontSize="22" FontWeight="SemiBold"/>
-    <TextBlock Foreground="{DynamicResource Texto2}" TextWrapping="Wrap" Margin="0,6,0,16" Text="BackupApp subirá la copia sin necesitar el programa del servicio ni ocupar espacio en tu PC. Para ello usa rclone, un programa gratuito y de código abierto que se descarga la primera vez (unos 30 MB)."/>
+    <TextBlock Foreground="{DynamicResource Texto2}" TextWrapping="Wrap" Margin="0,6,0,16" Text="BackupApp sube la copia directamente a tu cuenta: no tienes que instalar nada ni ocupa espacio en tu PC. (La primera vez prepara rclone, un componente gratuito y de código abierto: tarda un momento.)"/>
     <TextBlock Text="Servicio" FontSize="12" Foreground="{DynamicResource Texto2}" Margin="2,0,0,6"/>
     <WrapPanel x:Name="Servicios"/>
     <StackPanel x:Name="Claves" Margin="0,12,0,0"/>
@@ -360,12 +367,12 @@ $XamlDirecta = @"
   </StackPanel>
 </Window>
 "@
-function MostrarConectarDirecta {
+function MostrarConectarDirecta($tipo = 'drive') {
     $w = NuevaVentana $XamlDirecta; $w.Owner = $script:asis.Win
-    $script:dir = @{ Win = $w; Servicio = $ServiciosRclone[0]; Cajas = @{}; Paso = $null; Ps = $null; H = $null; Proc = $null; Nombre = $null; Timer = $null }
+    $script:dir = @{ Win = $w; Servicio = ($ServiciosRclone | Where-Object { $_.Tipo -eq $tipo } | Select-Object -First 1); Cajas = @{}; Paso = $null; Ps = $null; H = $null; Proc = $null; Nombre = $null; Timer = $null }
     foreach ($s in $ServiciosRclone) {
         $rb = New-Object Windows.Controls.RadioButton; $rb.Style = $script:Estilos['Pastilla']; $rb.Content = $s.Nombre; $rb.GroupName = 'srv'; $rb.Tag = $s.Tipo
-        $rb.IsChecked = ($s.Tipo -eq 'drive'); $rb.Margin = '0,0,4,6'
+        $rb.IsChecked = ($s.Tipo -eq $tipo); $rb.Margin = '0,0,4,6'
         $rb.add_Checked({ param($x, $e) $script:dir.Servicio = $ServiciosRclone | Where-Object { $_.Tipo -eq $x.Tag }; PintarClavesDirecta })
         [void]$w.FindName('Servicios').Children.Add($rb)
     }
@@ -379,12 +386,16 @@ function MostrarConectarDirecta {
 function PintarClavesDirecta {
     # Servicios que no usan el navegador (Backblaze B2) piden sus claves
     $d = $script:dir; $p = $d.Win.FindName('Claves'); $p.Children.Clear(); $d.Cajas = @{}
-    if (-not $d.Servicio.Claves) { $x = Texto "Al pulsar Conectar se abrirá el navegador para que inicies sesión en $($d.Servicio.Nombre) y des permiso a rclone." 12 'Normal' 'Texto2'; [void]$p.Children.Add($x); return }
+    if (-not $d.Servicio.Claves) { $x = Texto "Al pulsar Conectar se abrirá el navegador para que inicies sesión en $($d.Servicio.Nombre) y des permiso a BackupApp." 12 'Normal' 'Texto2'; [void]$p.Children.Add($x); return }
+    $x = Texto "Tus datos de acceso se guardan solo en este PC, ofuscados." 12 'Normal' 'Texto2'; [void]$p.Children.Add($x)
     foreach ($c in $d.Servicio.Claves) {
-        $l = Texto $c[1] 12 'Normal' 'Texto2'; $l.Margin = '0,6,0,4'; [void]$p.Children.Add($l)
-        $tb = New-Object Windows.Controls.TextBox; [void]$p.Children.Add($tb); $d.Cajas[$c[0]] = $tb
+        $l = Texto $c[1] 12 'Normal' 'Texto2'; $l.Margin = '0,8,0,4'; [void]$p.Children.Add($l)
+        $tb = if ($c[2]) { New-Object Windows.Controls.PasswordBox } else { New-Object Windows.Controls.TextBox }
+        $tb.Tag = [bool]$c[3]   # opcional
+        [void]$p.Children.Add($tb); $d.Cajas[$c[0]] = $tb
     }
 }
+function ValorCaja($c) { if ($c -is [Windows.Controls.PasswordBox]) { $c.Password } else { $c.Text.Trim() } }
 function EstadoDirecta($txt, $ocupado = $true) {
     $w = $script:dir.Win; $w.FindName('Estado').Text = $txt
     $w.FindName('Barra').Visibility = $(if ($ocupado) { 'Visible' } else { 'Collapsed' })
@@ -397,7 +408,7 @@ function EmpezarConexionDirecta {
         if ($c1.Length -lt 8) { EstadoDirecta "La contraseña debe tener al menos 8 caracteres." $false; return }
         if ($c1 -ne $c2) { EstadoDirecta "Las dos contraseñas no coinciden." $false; return }
     }
-    foreach ($k in $d.Cajas.Keys) { if (-not $d.Cajas[$k].Text.Trim()) { EstadoDirecta "Rellena las claves de $($d.Servicio.Nombre)." $false; return } }
+    foreach ($k in $d.Cajas.Keys) { if (-not $d.Cajas[$k].Tag -and -not (ValorCaja $d.Cajas[$k])) { EstadoDirecta "Rellena los datos de $($d.Servicio.Nombre)." $false; return } }
     $d.Timer = New-Object Windows.Threading.DispatcherTimer; $d.Timer.Interval = [TimeSpan]::FromMilliseconds(300)
     $d.Timer.add_Tick({ SeguirConexionDirecta })
     if (RcloneInstalado) { $d.Paso = 'login' }
@@ -420,7 +431,7 @@ function SeguirConexionDirecta {
         }
         'login' {
             $d.Nombre = NuevoNombreRemoto
-            $claves = @{}; foreach ($k in $d.Cajas.Keys) { $claves[$k] = $d.Cajas[$k].Text.Trim() }
+            $claves = @{}; foreach ($k in $d.Cajas.Keys) { $claves[$k] = ValorCaja $d.Cajas[$k] }
             $d.Proc = ConectarCuentaRclone $d.Servicio $d.Nombre $claves
             EstadoDirecta $(if ($d.Servicio.Claves) { "Comprobando las claves de $($d.Servicio.Nombre)..." } else { "Se ha abierto el navegador: inicia sesión en $($d.Servicio.Nombre) y acepta el permiso. Después vuelve aquí." })
             $d.Paso = 'esperando'
@@ -684,7 +695,7 @@ $XamlAsistente = @"
             <StackPanel>
               <StackPanel x:Name="ListaDiscos"/>
               <TextBlock Text="En la nube" FontSize="18" FontWeight="SemiBold" Margin="0,22,0,2"/>
-              <TextBlock Foreground="{DynamicResource Texto2}" TextWrapping="Wrap" Margin="0,0,0,12" Text="Una copia extra de lo más importante fuera de casa, por si le pasa algo al PC y al disco a la vez. Se guarda en la carpeta de tu servicio y su programa la sube, o va directa a tu cuenta (y cifrada, si quieres) si la conectas aquí."/>
+              <TextBlock Foreground="{DynamicResource Texto2}" TextWrapping="Wrap" Margin="0,0,0,12" Text="Una copia extra de lo más importante fuera de casa, por si le pasa algo al PC y al disco a la vez. Se guarda en la carpeta de tu servicio y su programa la sube, o va directa a tu cuenta (y cifrada, si quieres) si la conectas aquí sin instalar nada."/>
               <StackPanel x:Name="ListaNubes"/>
               <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
                 <Button x:Name="BtnDirecta" Content="+  Conectar una cuenta directamente" Margin="0,0,8,0"/>

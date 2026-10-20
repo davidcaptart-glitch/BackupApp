@@ -14,8 +14,12 @@ $ServiciosRclone = @(
     [pscustomobject]@{ Tipo = 'onedrive'; Nombre = 'OneDrive';     Opciones = @();                   Claves = $null }
     [pscustomobject]@{ Tipo = 'pcloud';   Nombre = 'pCloud';       Opciones = @();                   Claves = $null }
     [pscustomobject]@{ Tipo = 'box';      Nombre = 'Box';          Opciones = @();                   Claves = $null }
-    [pscustomobject]@{ Tipo = 'b2';       Nombre = 'Backblaze B2'; Opciones = @('hard_delete=true'); Claves = @(@('account', 'Identificador de la clave (keyID)'), @('key', 'Clave de aplicación (applicationKey)')) }
+    [pscustomobject]@{ Tipo = 'mega';     Nombre = 'MEGA';         Opciones = @();                   Claves = @(@('user', 'Email de tu cuenta de MEGA', $false, $false), @('pass', 'Contraseña de MEGA', $true, $false), @('2fa', 'Código de verificación en dos pasos (si lo tienes activado)', $false, $true)) }
+    [pscustomobject]@{ Tipo = 'protondrive'; Nombre = 'Proton Drive'; Opciones = @();                Claves = @(@('username', 'Usuario o email de Proton', $false, $false), @('password', 'Contraseña de Proton', $true, $false), @('2fa', 'Código de verificación en dos pasos (si lo tienes activado)', $false, $true)) }
+    [pscustomobject]@{ Tipo = 'b2';       Nombre = 'Backblaze B2'; Opciones = @('hard_delete=true'); Claves = @(@('account', 'Identificador de la clave (keyID)', $false, $false), @('key', 'Clave de aplicación (applicationKey)', $true, $false)) }
 )
+# Claves: @(nombre en rclone, texto para el usuario, es secreta, es opcional). Las secretas se guardan ofuscadas (--obscure).
+# iCloud y Amazon Photos no se pueden conectar de forma fiable desde otros programas: necesitan su propio programa.
 function RcloneInstalado { Test-Path -LiteralPath $RcloneExe }
 
 function InstalarRclone {
@@ -75,7 +79,8 @@ function ConectarCuentaRclone($servicio, $nombre, $claves = @{}) {
     # Crea la conexion. Si el servicio usa inicio de sesion por navegador, rclone lo abre y espera:
     # devuelve el proceso para que la ventana lo vigile (-SinEsperar).
     $a = @('config', 'create', $nombre, $servicio.Tipo) + $servicio.Opciones
-    foreach ($k in $claves.Keys) { $a += "$k=$($claves[$k])" }
+    foreach ($k in $claves.Keys) { if ("$($claves[$k])") { $a += "$k=$($claves[$k])" } }
+    if ($servicio.Claves | Where-Object { $_[2] }) { $a += '--obscure' }   # contraseñas: rclone las guarda ofuscadas
     return (Rclone $a -SinEsperar)
 }
 function CrearCifrado($base, $clave) {

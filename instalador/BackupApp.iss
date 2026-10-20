@@ -51,8 +51,9 @@ Type: files; Name: "{app}\iniciar_bandeja.vbs"
 Type: files; Name: "{app}\Hacer copia ahora.bat"
 
 [Icons]
-Name: "{userprograms}\BackupApp"; Filename: "{app}\BackupApp.exe"
-Name: "{userprograms}\BackupApp - Hacer copia ahora"; Filename: "{app}\BackupApp.exe"; Parameters: "/copiar"
+; AppUserModelID: el mismo que declara el programa (ui.ps1), para que la barra de tareas muestre el icono de BackupApp
+Name: "{userprograms}\BackupApp"; Filename: "{app}\BackupApp.exe"; AppUserModelID: "davidcaptart.BackupApp"
+Name: "{userprograms}\BackupApp - Hacer copia ahora"; Filename: "{app}\BackupApp.exe"; Parameters: "/copiar"; AppUserModelID: "davidcaptart.BackupApp"
 Name: "{userstartup}\BackupApp"; Filename: "{app}\BackupApp.exe"; Tasks: inicio
 
 [Run]
