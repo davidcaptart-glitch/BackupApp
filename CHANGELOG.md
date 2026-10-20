@@ -1,5 +1,9 @@
 # Cambios
 
+## 0.4.4
+- Al abrir BackupApp desde el menú Inicio se muestra su ventana (el plan de copias, o el asistente si aún no está configurado), aunque ya estuviera funcionando junto al reloj. Antes no pasaba nada.
+- Al arrancar Windows y después de actualizarse sigue entrando en silencio, solo con el escudo junto al reloj.
+
 ## 0.4.3
 - Medir las carpetas es mucho más rápido: ya no recorre las que no se copian (node_modules, entornos de Python, cachés), que pueden tener cientos de miles de archivos.
 - Se mide primero lo que has marcado, y de una carpeta en una, para no saturar el disco duro.

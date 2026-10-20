@@ -54,12 +54,12 @@ Type: files; Name: "{app}\Hacer copia ahora.bat"
 ; AppUserModelID: el mismo que declara el programa (ui.ps1), para que la barra de tareas muestre el icono de BackupApp
 Name: "{userprograms}\BackupApp"; Filename: "{app}\BackupApp.exe"; AppUserModelID: "davidcaptart.BackupApp"
 Name: "{userprograms}\BackupApp - Hacer copia ahora"; Filename: "{app}\BackupApp.exe"; Parameters: "/copiar"; AppUserModelID: "davidcaptart.BackupApp"
-Name: "{userstartup}\BackupApp"; Filename: "{app}\BackupApp.exe"; Tasks: inicio
+Name: "{userstartup}\BackupApp"; Filename: "{app}\BackupApp.exe"; Parameters: "/inicio"; AppUserModelID: "davidcaptart.BackupApp"; Tasks: inicio
 
 [Run]
 Filename: "{app}\BackupApp.exe"; Description: "Abrir BackupApp ahora"; Flags: nowait postinstall skipifsilent
 ; En una actualizacion (modo silencioso) se vuelve a abrir solo; /SINABRIR=1 lo evita (pruebas)
-Filename: "{app}\BackupApp.exe"; Flags: nowait; Check: AbrirTrasActualizar
+Filename: "{app}\BackupApp.exe"; Parameters: "/inicio"; Flags: nowait; Check: AbrirTrasActualizar
 
 [Code]
 const

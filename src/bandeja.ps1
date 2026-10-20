@@ -5,10 +5,18 @@
 #  - Ofrece registrar discos nuevos y reparte las carpetas entre ellos
 #  - Mide el tamano de las carpetas una vez al dia
 # ============================================================
+param([switch]$AlIniciarWindows)   # al arrancar Windows (o tras actualizar) no se abre ninguna ventana
 $ErrorActionPreference = 'SilentlyContinue'
 
 $mutex = New-Object System.Threading.Mutex($false, "BackupMensualBandeja")
-if (-not $mutex.WaitOne(0)) { exit }
+if (-not $mutex.WaitOne(0)) {
+    # Ya hay un BackupApp abierto: se le pide que muestre su ventana (lo vigila cada medio segundo)
+    if (-not $AlIniciarWindows) {
+        $d = Join-Path $env:LOCALAPPDATA "BackupApp"; New-Item -ItemType Directory -Path $d -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $d "abrir.senal") -Value "abrir"
+    }
+    exit
+}
 
 . (Join-Path $PSScriptRoot "config.ps1")
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing, Microsoft.VisualBasic
@@ -669,8 +677,16 @@ $timer = New-Object Windows.Forms.Timer
 $timer.Interval = 15000
 $timer.add_Tick({ Revisar })
 $timer.Start()
-# Primera ejecucion: sin carpetas elegidas, se abre el asistente
+# Ventana principal: el plan de copias, o el asistente si aun no hay nada configurado
+function AbrirVentanaPrincipal { if (-not $Carpetas) { AbrirAsistente } else { MostrarPlan } }
+$FicheroAbrir = Join-Path $Datos "abrir.senal"
+if (Test-Path -LiteralPath $FicheroAbrir) { Remove-Item -LiteralPath $FicheroAbrir -Force }
+$timerAbrir = New-Object Windows.Forms.Timer; $timerAbrir.Interval = 500
+$timerAbrir.add_Tick({ if (Test-Path -LiteralPath $FicheroAbrir) { Remove-Item -LiteralPath $FicheroAbrir -Force -ErrorAction SilentlyContinue; AbrirVentanaPrincipal } })
+$timerAbrir.Start()
+# Al abrirlo el usuario se muestra la ventana; al arrancar Windows solo el escudo (salvo la primera vez, sin nada configurado)
 if (-not $Carpetas) { $script:ultimoRecordatorio = Get-Date; AbrirAsistente }
+elseif (-not $AlIniciarWindows) { MostrarPlan }
 [GC]::Collect()
 [Windows.Forms.Application]::Run()
 $mutex.ReleaseMutex()
