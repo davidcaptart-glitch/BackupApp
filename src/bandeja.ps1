@@ -1,0 +1,574 @@
+﻿# ============================================================
+#  BACKUP - icono en la bandeja del sistema (segundo plano)
+#  - Vigila tus carpetas por eventos de Windows (no escanea: ~0% CPU)
+#  - Detecta los discos de backup al conectarlos (por su marca, no por la letra)
+#  - Ofrece registrar discos nuevos y reparte las carpetas entre ellos
+#  - Mide el tamano de las carpetas una vez al dia
+# ============================================================
+$ErrorActionPreference = 'SilentlyContinue'
+
+$mutex = New-Object System.Threading.Mutex($false, "BackupMensualBandeja")
+if (-not $mutex.WaitOne(0)) { exit }
+
+. (Join-Path $PSScriptRoot "config.ps1")
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing, Microsoft.VisualBasic
+. (Join-Path $PSScriptRoot "ui.ps1")
+. (Join-Path $PSScriptRoot "asistente.ps1")
+. (Join-Path $PSScriptRoot "actualizar.ps1")
+[System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'Idle'
+
+$ScriptBackup = Join-Path $PSScriptRoot "backup_mensual.ps1"
+$ScriptMedir  = Join-Path $PSScriptRoot "medir_tamanos.ps1"
+if (Test-Path -LiteralPath $FicheroSalir) { Remove-Item -LiteralPath $FicheroSalir -Force }
+
+# Cambios pendientes: ruta -> unidad de reparto
+$script:pend = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::OrdinalIgnoreCase)
+if (Test-Path $FicheroPend) {
+    foreach ($l in [IO.File]::ReadAllLines($FicheroPend)) { $p = $l.Split('|'); if ($p.Count -eq 2) { $script:pend[$p[1]] = $p[0] } }
+}
+$script:sucio = $false; $script:desbordado = $false; $script:ticks = 0
+$script:ultimoRecordatorio = [datetime]::MinValue
+$script:accionClic = $null
+$script:proceso = $null; $script:medidor = $null; $script:medidorAntes = $false
+$script:intentoMedicion = [datetime]::MinValue
+$script:formTam = $null
+$script:letrasAntes = @(UnidadesDeDisco | ForEach-Object { $_.Name.Substring(0, 2) })
+$script:discosCache = @(LeerDiscos)
+$script:marcaDiscos = if (Test-Path $FicheroDiscos) { (Get-Item $FicheroDiscos).LastWriteTime } else { $null }
+$patronExcluir = '\\(' + (($Excluir | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')(\\|$)'
+
+# ---------- Utilidades ----------
+function FmtTam($b) {
+    if ($null -eq $b) { return "-" }
+    $a = [math]::Abs([double]$b)
+    if ($a -ge 1TB) { "{0:N2} TB" -f ($b / 1TB) } elseif ($a -ge 1GB) { "{0:N1} GB" -f ($b / 1GB) } else { "{0:N0} MB" -f ($b / 1MB) }
+}
+function FmtDif($b) {
+    if ($null -eq $b) { return "-" }
+    $signo = if ($b -ge 0) { "+" } else { "-" }
+    $signo + (FmtTam ([math]::Abs([double]$b)))
+}
+function Avisar($titulo, $texto, $accion) {
+    $script:accionClic = $accion
+    $icono.ShowBalloonTip(15000, $titulo, $texto, [Windows.Forms.ToolTipIcon]::Info)
+}
+function Copiando { $script:proceso -and -not $script:proceso.HasExited }
+function LanzarCopia {
+    if (Copiando) { Avisar "Backup" "Ya hay una copia en marcha." $null; return }
+    $script:proceso = Start-Process powershell.exe -PassThru -ArgumentList `
+        "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$ScriptBackup`" -DesdeBandeja"
+    try { $script:proceso.PriorityClass = 'BelowNormal' } catch {}
+}
+
+# ---------- Cambios pendientes ----------
+function Registrar($ruta) {
+    if ($ruta -match $patronExcluir) { return }
+    if ($script:pend.Count -ge 50000) { $script:desbordado = $true; return }
+    if (-not $script:pend.ContainsKey($ruta)) {
+        $u = UnidadDeRuta $ruta
+        if ($u) { $script:pend[$ruta] = $u; $script:sucio = $true }
+    }
+}
+function GuardarPend { [IO.File]::WriteAllLines($FicheroPend, [string[]]@($script:pend.GetEnumerator() | ForEach-Object { "$($_.Value)|$($_.Key)" })) }
+function PendPorDisco {
+    # devuelve hashtable IdDisco -> numero de cambios ('' = carpetas nuevas aun sin disco)
+    $rep = LeerReparto; $h = @{}
+    foreach ($u in $script:pend.Values) { $id = if ($rep.ContainsKey($u)) { $rep[$u] } else { '' }; $h[$id] = 1 + [int]$h[$id] }
+    return $h
+}
+function NumCambios($idDisco) {
+    if ($script:desbordado) { return "muchos" }
+    if ($null -eq $idDisco) { return "$($script:pend.Count)" }
+    $h = PendPorDisco
+    return "$([int]$h[$idDisco] + [int]$h[''])"
+}
+function DiscosQueTocan { @($script:discosCache | Where-Object { DiscoToca $_ }) }
+function TextoEstado {
+    $txt = "Cambios sin copiar: $(NumCambios $null)"
+    $t = DiscosQueTocan
+    if (-not $script:discosCache) { $txt += "  |  Sin discos registrados" }
+    elseif ($t) { $txt += "  |  Toca copiar: " + (($t | ForEach-Object { $_.Nombre }) -join ", ") }
+    else { $txt += "  |  Todos los discos al dia" }
+    return $txt
+}
+function ActualizarTooltip {
+    $t = "Backup: $(NumCambios $null) cambios sin copiar"
+    if (DiscosQueTocan) { $t += " - toca copia" }
+    if ($t.Length -gt 63) { $t = $t.Substring(0, 63) }
+    $icono.Text = $t
+    $miEstado.Text = TextoEstado
+}
+
+# ---------- Ventana invisible, icono y menu ----------
+$form = New-Object Windows.Forms.Form
+$form.ShowInTaskbar = $false
+$null = $form.Handle
+
+$icono = New-Object Windows.Forms.NotifyIcon
+$ficheroIcono = RutaRecurso "BackupApp.ico"
+$icono.Icon = if ($ficheroIcono) { New-Object Drawing.Icon $ficheroIcono, 16, 16 } else { [Drawing.SystemIcons]::Shield }
+$menu = New-Object Windows.Forms.ContextMenuStrip
+function MI($texto) { New-Object Windows.Forms.ToolStripMenuItem $texto }
+function SEP { New-Object Windows.Forms.ToolStripSeparator }
+$miVersion = MI "BackupApp $Version"; $miVersion.Enabled = $false
+$miEstado = MI "Estado"; $miEstado.Enabled = $false
+$miCopiar = MI "Hacer copia ahora"
+$miDiscos = MI "Discos de backup"
+$miTam    = MI "Tamano de las carpetas..."
+$miPlan   = MI "Plan de copias..."
+$miAsis   = MI "Asistente de configuracion..."
+$miAnadir = MI "Anadir carpeta..."
+$miQuitar = MI "Quitar carpeta"
+$miLogs   = MI "Abrir registros"
+$miActual = MI "Buscar actualizaciones..."
+$miSalir  = MI "Salir"
+[void]$miDiscos.DropDownItems.Add("(cargando)"); [void]$miQuitar.DropDownItems.Add("(cargando)")
+[void]$menu.Items.AddRange(@($miVersion, $miEstado,(SEP), $miCopiar, $miDiscos, $miPlan, $miTam, (SEP), $miAsis, $miAnadir, $miQuitar, (SEP), $miActual, $miLogs, $miSalir))
+$icono.ContextMenuStrip = $menu
+
+$miCopiar.add_Click({ LanzarCopia })
+$miLogs.add_Click({ New-Item -ItemType Directory -Path $CarpetaLogs -Force | Out-Null; Start-Process explorer.exe $CarpetaLogs })
+function Salir { GuardarPend; $icono.Visible = $false; [Windows.Forms.Application]::Exit() }
+$miSalir.add_Click({ Salir })
+$icono.add_DoubleClick({ Avisar "Estado del backup" (TextoEstado) 'copiar' })
+$icono.add_BalloonTipClicked({
+    $a = "$script:accionClic"
+    if ($a -eq 'copiar')            { LanzarCopia }
+    elseif ($a -eq 'tamanos')       { MostrarTamanos }
+    elseif ($a -eq 'plan')          { MostrarPlan }
+    elseif ($a -eq 'asistente')     { AbrirAsistente }
+    elseif ($a -eq 'actualizar' -and $script:releaseNueva) { MostrarNovedades $script:releaseNueva }
+    elseif ($a -like 'registrar:*') { RegistrarDesdeLetra $a.Substring(10) }
+})
+
+# ---------- Discos de backup ----------
+function RegistrarDesdeLetra($letra) {
+    $dr = New-Object IO.DriveInfo $letra
+    if (-not $dr.IsReady) { [void][Windows.Forms.MessageBox]::Show("El disco $letra ya no esta conectado.", $Titulo); return }
+    $n = @(LeerDiscos).Count + 1
+    $etq = if ($dr.VolumeLabel) { " '$($dr.VolumeLabel)'" } else { "" }
+    $nombre = [Microsoft.VisualBasic.Interaction]::InputBox(
+        "Disco $letra$etq de $(FmtTam $dr.TotalSize) ($(FmtTam $dr.AvailableFreeSpace) libres).`n`n" +
+        "Ponle un nombre para reconocerlo (por ejemplo, lo que escribas en una pegatina):", "Registrar disco de backup", "Backup $n")
+    if (-not $nombre) { return }
+    if ($dr.DriveFormat -ne 'NTFS') {
+        $r = [Windows.Forms.MessageBox]::Show("El disco esta en formato $($dr.DriveFormat): funcionara, pero SIN compresion.`n" +
+             "Para comprimir habria que formatearlo en NTFS (borra todo su contenido).`n`nRegistrarlo igualmente?", $Titulo, 'YesNo', 'Warning')
+        if ($r -ne 'Yes') { return }
+    }
+    [void](RegistrarDisco $letra $nombre)
+    $script:discosCache = @(LeerDiscos); $script:marcaDiscos = (Get-Item $FicheroDiscos).LastWriteTime
+    ActualizarTooltip
+    Avisar "Disco '$nombre' registrado" "Las carpetas nuevas se repartiran automaticamente entre tus discos segun su espacio libre. Haz clic para copiar ahora." 'copiar'
+}
+function OlvidarDisco($id) {
+    $d = LeerDiscos | Where-Object { $_.Id -eq $id } | Select-Object -First 1
+    $r = [Windows.Forms.MessageBox]::Show("Dejar de usar el disco '$($d.Nombre)'?`n`n" +
+         "No se borra nada de el. Sus carpetas se repartiran entre los demas discos en la proxima copia (se copiaran de nuevo).",
+         $Titulo, 'YesNo', 'Question')
+    if ($r -ne 'Yes') { return }
+    GuardarDiscos @(LeerDiscos | Where-Object { $_.Id -ne $id })
+    $rep = LeerReparto
+    foreach ($k in @($rep.Keys)) { if ($rep[$k] -eq $id) { $rep.Remove($k) } }
+    GuardarReparto $rep
+    $script:discosCache = @(LeerDiscos)
+    ActualizarTooltip
+}
+function RenombrarDesdeMenu($id) {
+    $d = LeerDiscos | Where-Object { $_.Id -eq $id } | Select-Object -First 1
+    $c = DiscosConectados | Where-Object { $_.Id -eq $id } | Select-Object -First 1
+    $n = PreguntarNombreDisco $null $d.Nombre $(if ($c) { $c.Letra })
+    if (-not $n) { return }
+    RenombrarDiscoRegistrado $id $n
+    $script:discosCache = @(LeerDiscos); $script:marcaDiscos = (Get-Item $FicheroDiscos).LastWriteTime
+}
+function MenuDiscos {
+    $miDiscos.DropDownItems.Clear()
+    $con = @(DiscosConectados)
+    foreach ($d in $script:discosCache) {
+        $c = $con | Where-Object { $_.Id -eq $d.Id } | Select-Object -First 1
+        $estado = if ($c) { "conectado en $($c.Letra)" } else { "no conectado" }
+        $ult = if ($d.UltimaCopia) { "copia " + $d.UltimaCopia.Substring(0, 10) } else { "sin copias" }
+        $it = MI "$($d.Nombre)  -  $estado  -  $ult"
+        if ($c) {
+            $ab = MI "Abrir"; $ab.Tag = $c.Raiz; $ab.add_Click({ param($s, $e) Start-Process explorer.exe $s.Tag })
+            [void]$it.DropDownItems.Add($ab)
+        }
+        $rn = MI "Cambiar nombre..."; $rn.Tag = $d.Id; $rn.add_Click({ param($s, $e) RenombrarDesdeMenu $s.Tag })
+        [void]$it.DropDownItems.Add($rn)
+        $ol = MI "Dejar de usar este disco"; $ol.Tag = $d.Id; $ol.add_Click({ param($s, $e) OlvidarDisco $s.Tag })
+        [void]$it.DropDownItems.Add($ol)
+        [void]$miDiscos.DropDownItems.Add($it)
+    }
+    if ($script:discosCache) { [void]$miDiscos.DropDownItems.Add((SEP)) }
+    $reg = MI "Registrar disco conectado"
+    $cands = @(DiscosCandidatos)
+    foreach ($dr in $cands) {
+        $l = $dr.Name.Substring(0, 2)
+        $etq = if ($dr.VolumeLabel) { " $($dr.VolumeLabel)" } else { "" }
+        $x = MI "$l$etq  ($(FmtTam $dr.TotalSize))"; $x.Tag = $l
+        $x.add_Click({ param($s, $e) RegistrarDesdeLetra $s.Tag })
+        [void]$reg.DropDownItems.Add($x)
+    }
+    if (-not $cands) { $x = MI "(conecta un disco externo nuevo)"; $x.Enabled = $false; [void]$reg.DropDownItems.Add($x) }
+    [void]$miDiscos.DropDownItems.Add($reg)
+}
+
+# ---------- Carpetas incluidas ----------
+$script:watchers = @()
+function IniciarVigilancia {
+    foreach ($w in $script:watchers) { $w.EnableRaisingEvents = $false; $w.Dispose() }
+    $script:watchers = @()
+    foreach ($c in $Carpetas) {
+        if (-not (Test-Path -LiteralPath $c.Origen)) { continue }
+        $w = New-Object IO.FileSystemWatcher $c.Origen
+        $w.IncludeSubdirectories = $true
+        $w.InternalBufferSize    = 65536
+        $w.NotifyFilter          = [IO.NotifyFilters]'FileName, DirectoryName, LastWrite, Size'
+        $w.SynchronizingObject   = $form
+        $w.add_Changed({ param($s, $e) Registrar $e.FullPath })
+        $w.add_Created({ param($s, $e) Registrar $e.FullPath })
+        $w.add_Deleted({ param($s, $e) Registrar $e.FullPath })
+        $w.add_Renamed({ param($s, $e) Registrar $e.FullPath })
+        $w.add_Error({ $script:desbordado = $true; $script:sucio = $true })
+        $w.EnableRaisingEvents   = $true
+        $script:watchers += $w
+    }
+}
+function GuardarCarpetas($lista) {
+    # $lista: rutas; se conserva la prioridad de las que ya estaban
+    EscribirCarpetas @($lista | ForEach-Object { $r = $_; $c = $Carpetas | Where-Object { $_.Origen -eq $r } | Select-Object -First 1
+        [pscustomobject]@{ Origen = $r; Prioridad = $(if ($c) { $c.Prioridad } else { PrioridadSugerida $r }) } })
+    $script:Carpetas = LeerCarpetas
+    IniciarVigilancia
+}
+function AnadirCarpeta {
+    $dlg = New-Object Windows.Forms.FolderBrowserDialog
+    $dlg.Description = "Elige la carpeta que quieres incluir en el backup"
+    $dlg.ShowNewFolderButton = $false
+    if ($dlg.ShowDialog() -ne [Windows.Forms.DialogResult]::OK) { return }
+    $nueva = $dlg.SelectedPath.TrimEnd('\')
+    $actuales = @($Carpetas | ForEach-Object { $_.Origen })
+    $msg = $null
+    if ($nueva -match '^[A-Za-z]:$') { $msg = "No se puede anadir una unidad entera. Elige una carpeta." }
+    elseif (Test-Path -LiteralPath (Join-Path $nueva.Substring(0, 3) "$CarpetaBackup\$MarcaDisco")) { $msg = "Esa carpeta esta en un disco de backup." }
+    else {
+        foreach ($a in $actuales) {
+            if (DentroDe $nueva $a) { $msg = "Esa carpeta ya se copia, porque esta dentro de:`n$a"; break }
+            if (DentroDe $a $nueva) { $msg = "Esa carpeta contiene otra que ya se copia:`n$a`n`nQuita primero '$a' y vuelve a anadir esta."; break }
+        }
+    }
+    if ($msg) { [void][Windows.Forms.MessageBox]::Show($msg, $Titulo, 'OK', 'Warning'); return }
+    GuardarCarpetas ($actuales + $nueva)
+    Avisar "Carpeta anadida" "$nueva`nSe repartira entre tus discos y se copiara en la proxima copia." $null
+}
+function QuitarCarpeta($ruta) {
+    $r = [Windows.Forms.MessageBox]::Show("Dejar de copiar esta carpeta?`n`n$ruta`n`nNo se borra nada: las copias que ya existen en los discos se conservan.",
+                                          $Titulo, 'YesNo', 'Question')
+    if ($r -ne 'Yes') { return }
+    GuardarCarpetas @($Carpetas | ForEach-Object { $_.Origen } | Where-Object { $_ -ne $ruta })
+    $rep = LeerReparto
+    foreach ($k in @($rep.Keys)) { if (DentroDe $k $ruta) { $rep.Remove($k) } }
+    GuardarReparto $rep
+    foreach ($k in @($script:pend.Keys)) { if (DentroDe $k $ruta) { [void]$script:pend.Remove($k) } }
+    $script:sucio = $true
+    Avisar "Carpeta quitada" "$ruta ya no se incluira en el backup." $null
+}
+function MenuCarpetas {
+    $miQuitar.DropDownItems.Clear()
+    foreach ($c in $Carpetas) {
+        $it = MI $c.Origen; $it.Tag = $c.Origen
+        $it.add_Click({ param($s, $e) QuitarCarpeta $s.Tag })
+        [void]$miQuitar.DropDownItems.Add($it)
+    }
+    if (-not $Carpetas) { $x = MI "(ninguna)"; $x.Enabled = $false; [void]$miQuitar.DropDownItems.Add($x) }
+}
+$miAnadir.add_Click({ AnadirCarpeta })
+$menu.add_Opening({ MenuDiscos; MenuCarpetas; ActualizarTooltip; EstiloMenu $menu })
+
+# ---------- Tamanos e historial mes a mes ----------
+function LeerHistorial {
+    if (-not (Test-Path $Historial)) { return @() }
+    @(Import-Csv $Historial -Delimiter ';' | ForEach-Object {
+        [pscustomobject]@{ Fecha = [datetime]::ParseExact($_.Fecha, 'yyyy-MM-dd', $null); Carpeta = $_.Carpeta
+                           Bytes = [int64]$_.Bytes; Archivos = [int64]$_.Archivos } })
+}
+function Resumen {
+    $h = LeerHistorial
+    foreach ($c in $Carpetas) {
+        $mis = @($h | Where-Object { $_.Carpeta -eq $c.Origen } | Sort-Object Fecha)
+        if (-not $mis) { [pscustomobject]@{ Carpeta = $c.Origen; Actual = $null; Archivos = $null; Mes = $null; Anio = $null; Fecha = $null }; continue }
+        $u    = $mis[-1]
+        $mes  = $mis | Where-Object { $_.Fecha -le $u.Fecha.AddDays(-30) }  | Select-Object -Last 1
+        $anio = $mis | Where-Object { $_.Fecha -le $u.Fecha.AddDays(-365) } | Select-Object -Last 1
+        [pscustomobject]@{ Carpeta = $c.Origen; Actual = $u.Bytes; Archivos = $u.Archivos; Fecha = $u.Fecha
+                           Mes  = $(if ($mes)  { $u.Bytes - $mes.Bytes }  else { $null })
+                           Anio = $(if ($anio) { $u.Bytes - $anio.Bytes } else { $null }) }
+    }
+}
+function EvolucionMensual {
+    $h = LeerHistorial
+    $filas = @()
+    foreach ($c in $Carpetas) {
+        $porMes = $h | Where-Object { $_.Carpeta -eq $c.Origen } | Sort-Object Fecha |
+                  Group-Object { $_.Fecha.ToString('yyyy-MM') } | ForEach-Object { $_.Group[-1] }
+        $prev = $null
+        foreach ($m in $porMes) {
+            $filas += [pscustomobject]@{ Mes = $m.Fecha.ToString('yyyy-MM'); Carpeta = $c.Origen; Bytes = $m.Bytes
+                                         Cambio = $(if ($prev) { $m.Bytes - $prev.Bytes } else { $null }) }
+            $prev = $m
+        }
+    }
+    $filas | Sort-Object Mes, Carpeta -Descending
+}
+function EstadoDiscos {
+    $rep = LeerReparto; $tam = LeerTamUnidades; $oc = OcupacionPorDisco $rep $tam
+    foreach ($d in (LeerDiscos)) {
+        $cap = [int64]$d.Capacidad
+        [pscustomobject]@{ Nombre = $d.Nombre; Capacidad = $cap; Asignado = $oc[$d.Id]
+                           Uso = $(if ($cap) { 100 * $oc[$d.Id] / $cap } else { $null }); Ultima = $d.UltimaCopia }
+    }
+}
+function MedidorActivo { $script:medidor -and -not $script:medidor.HasExited }
+function LanzarMedicion {
+    if (MedidorActivo) { return }
+    $script:medidor = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList `
+        "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ScriptMedir`""
+    try { $script:medidor.PriorityClass = 'Idle' } catch {}
+    $script:medidorAntes = $true
+}
+function MedicionTerminada {
+    $h = LeerHistorial
+    if ($h) {
+        $fechas = @($h | Select-Object -ExpandProperty Fecha -Unique | Sort-Object)
+        $hoy = $fechas[-1]
+        $total = ($h | Where-Object { $_.Fecha -eq $hoy } | Measure-Object Bytes -Sum).Sum
+        if ($fechas.Count -ge 2 -and $fechas[-2].ToString('yyyy-MM') -ne $hoy.ToString('yyyy-MM')) {
+            $lineas = foreach ($r in (Resumen)) { if ($null -ne $r.Mes) { "$(Split-Path $r.Carpeta -Leaf): $(FmtDif $r.Mes)" } }
+            if ($lineas) { Avisar "Cambios de tamano en el ultimo mes" (($lineas -join "`n") + "`nTotal: $(FmtTam $total)") 'tamanos' }
+        }
+    }
+    # Discos que se quedan pequenos
+    $llenos = @(EstadoDiscos | Where-Object { $_.Uso -gt 90 })
+    $plan = if ($script:discosCache) { PlanDeCopias $script:discosCache (AsignarNuevas) (LeerTamUnidades) } else { $null }
+    if ($plan -and $plan.EnEspera -gt 0) {
+        Avisar "Hay carpetas sin copia" "$(FmtTam $plan.EnEspera) no caben en tus discos y esperan a uno nuevo. Recomendado: un disco de $(TamComercial $plan.Comprar). Haz clic para ver el plan." 'plan'
+    } elseif ($llenos) {
+        Avisar "Un disco se esta llenando" ((($llenos | ForEach-Object { "$($_.Nombre): {0:N0} %" -f $_.Uso }) -join "`n") + "`nLas carpetas nuevas iran a los discos con mas espacio.") 'tamanos'
+    }
+    if ($script:formTam -and $script:formTam.Visible) { RellenarTamanos }
+}
+function NuevaLista($nombre, $y, $alto, $cols, $anchor) {
+    $lv = New-Object Windows.Forms.ListView; $lv.Name = $nombre; $lv.View = 'Details'; $lv.FullRowSelect = $true
+    $lv.SetBounds(12, $y, 860, $alto); $lv.Anchor = $anchor
+    foreach ($c in $cols) { [void]$lv.Columns.Add($c[0], $c[1]) }
+    return $lv
+}
+function Fila($lv, $valores) {
+    $it = New-Object Windows.Forms.ListViewItem ([string]$valores[0])
+    foreach ($v in $valores[1..($valores.Count - 1)]) { [void]$it.SubItems.Add([string]$v) }
+    [void]$lv.Items.Add($it)
+}
+function RellenarTamanos {
+    $f = $script:formTam
+    foreach ($n in 'lvRes', 'lvDis', 'lvMes') { $f.Controls[$n].Items.Clear() }
+    $res = @(Resumen)
+    foreach ($r in $res) {
+        Fila $f.Controls['lvRes'] @($r.Carpeta, (FmtTam $r.Actual), $(if ($null -ne $r.Archivos) { "{0:N0}" -f $r.Archivos } else { "-" }), (FmtDif $r.Mes), (FmtDif $r.Anio))
+    }
+    foreach ($d in (EstadoDiscos)) {
+        Fila $f.Controls['lvDis'] @($d.Nombre, (FmtTam $d.Capacidad), (FmtTam $d.Asignado), $(if ($null -ne $d.Uso) { "{0:N0} %" -f $d.Uso } else { "-" }), $(if ($d.Ultima) { $d.Ultima } else { "nunca" }))
+    }
+    foreach ($m in (EvolucionMensual)) { Fila $f.Controls['lvMes'] @($m.Mes, $m.Carpeta, (FmtTam $m.Bytes), (FmtDif $m.Cambio)) }
+    $total = ($res | Where-Object { $null -ne $_.Actual } | Measure-Object Actual -Sum).Sum
+    $fecha = ($res | Where-Object { $_.Fecha } | Sort-Object Fecha | Select-Object -Last 1).Fecha
+    $txt = if ($fecha) { "Ultima medicion: $($fecha.ToString('dd/MM/yyyy'))   |   Total: $(FmtTam $total)" } else { "Todavia no hay mediciones. Pulsa 'Medir ahora'." }
+    if (MedidorActivo) { $txt += "   |   Midiendo..." }
+    $f.Controls['lblInfo'].Text = $txt
+}
+function MostrarTamanos {
+    if ($script:formTam -and -not $script:formTam.IsDisposed) { RellenarTamanos; $script:formTam.Show(); $script:formTam.Activate(); return }
+    $f = New-Object Windows.Forms.Form
+    $f.Text = "Tamano de las carpetas y discos del backup"; $f.Size = New-Object Drawing.Size(900, 700)
+    $f.StartPosition = 'CenterScreen'; $f.Font = New-Object Drawing.Font("Segoe UI", 9)
+    $lbl  = New-Object Windows.Forms.Label; $lbl.Name = 'lblInfo'; $lbl.SetBounds(12, 10, 860, 20); $lbl.Anchor = 'Top,Left,Right'
+    $lv1  = NuevaLista 'lvRes' 35 130 @(@("Carpeta", 380), @("Tamano", 110), @("Archivos", 110), @("vs hace 1 mes", 120), @("vs hace 1 ano", 120)) 'Top,Left,Right'
+    $l2   = New-Object Windows.Forms.Label; $l2.Text = "Discos de backup (asignado = lo que les toca guardar segun el reparto)"; $l2.SetBounds(12, 172, 860, 20)
+    $lv2  = NuevaLista 'lvDis' 195 105 @(@("Disco", 250), @("Capacidad", 130), @("Asignado", 130), @("Uso", 90), @("Ultima copia", 160)) 'Top,Left,Right'
+    $l3   = New-Object Windows.Forms.Label; $l3.Text = "Evolucion mes a mes (ultima medicion de cada mes)"; $l3.SetBounds(12, 308, 860, 20)
+    $lv3  = NuevaLista 'lvMes' 331 270 @(@("Mes", 90), @("Carpeta", 420), @("Tamano", 140), @("Cambio vs mes anterior", 180)) 'Top,Bottom,Left,Right'
+    $b1 = New-Object Windows.Forms.Button; $b1.Text = "Medir ahora";    $b1.SetBounds(12, 615, 130, 30);  $b1.Anchor = 'Bottom,Left'
+    $b2 = New-Object Windows.Forms.Button; $b2.Text = "Abrir en Excel"; $b2.SetBounds(150, 615, 130, 30); $b2.Anchor = 'Bottom,Left'
+    $b3 = New-Object Windows.Forms.Button; $b3.Text = "Cerrar";         $b3.SetBounds(742, 615, 130, 30); $b3.Anchor = 'Bottom,Right'
+    $b1.add_Click({ LanzarMedicion; RellenarTamanos })
+    $b2.add_Click({ if (Test-Path $Historial) { Start-Process $Historial } })
+    $b3.add_Click({ $script:formTam.Hide() })
+    $f.add_FormClosing({ param($s, $e) if ($e.CloseReason -eq 'UserClosing') { $e.Cancel = $true; $s.Hide() } })
+    $f.Controls.AddRange(@($lbl, $lv1, $l2, $lv2, $l3, $lv3, $b1, $b2, $b3))
+    $script:formTam = $f
+    RellenarTamanos
+    $f.Show(); $f.Activate()
+}
+$miTam.add_Click({ MostrarTamanos })
+
+# ---------- Plan de copias ----------
+$XamlPlan = @"
+<Window $VentanaBase Title="Plan de copias" Width="840" Height="700" MinWidth="640" MinHeight="480" WindowStartupLocation="CenterScreen">
+  <Grid Margin="34,28,34,24">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <TextBlock Text="Plan de copias" FontSize="28" FontWeight="SemiBold" FontFamily="Segoe UI Variable Display, Segoe UI"/>
+    <TextBlock x:Name="Desc" Grid.Row="1" Foreground="{DynamicResource Texto2}" Margin="0,6,0,18" TextWrapping="Wrap" Text="Qué se copia en cada disco y qué espera a un disco nuevo."/>
+    <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"><StackPanel x:Name="ListaPlan"/></ScrollViewer>
+    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+      <Button x:Name="BtnAsis" Content="Cambiar el plan" Margin="0,0,8,0"/>
+      <Button x:Name="BtnCerrar" Content="Cerrar" Style="{DynamicResource Primario}" MinWidth="110"/>
+    </StackPanel>
+  </Grid>
+</Window>
+"@
+function MostrarPlan {
+    $w = NuevaVentana $XamlPlan
+    $w.FindName('BtnCerrar').add_Click({ param($s, $e) [Windows.Window]::GetWindow($s).Close() })
+    $w.FindName('BtnAsis').add_Click({ param($s, $e) [Windows.Window]::GetWindow($s).Close(); AbrirAsistente })
+    $w.Cursor = [Windows.Input.Cursors]::Wait
+    MostrarSinBloquear $w
+    $discos = @(LeerDiscos)
+    $rep = if ($discos) { AsignarNuevas } else { LeerReparto }
+    $con = @(DiscosConectados)
+    $info = foreach ($d in $discos) {
+        $c = $con | Where-Object { $_.Id -eq $d.Id } | Select-Object -First 1
+        $ult = if ($d.UltimaCopia) { "última copia $($d.UltimaCopia.Substring(0, 10))" } else { "sin copias aún" }
+        [pscustomobject]@{ Id = $d.Id; Detalle = "$(if ($c) { "conectado en $($c.Letra)" } else { 'no conectado' })  $([char]0x00B7)  $ult" }
+    }
+    PintarPlan $w.FindName('ListaPlan') (PlanDeCopias $discos $rep (TamanosDe @(UnidadesActuales))) 0 $info
+    $w.Cursor = $null
+    $script:discosCache = @(LeerDiscos)
+}
+$miPlan.add_Click({ MostrarPlan })
+
+# ---------- Asistente ----------
+function AbrirAsistente { MostrarAsistente 'AsistenteTerminado' }
+function AsistenteTerminado {
+    $script:Carpetas = LeerCarpetas
+    IniciarVigilancia
+    foreach ($k in @($script:pend.Keys)) { if (-not ($Carpetas | Where-Object { DentroDe $k $_.Origen })) { [void]$script:pend.Remove($k) } }
+    GuardarPend
+    $script:discosCache = @(LeerDiscos)
+    $script:marcaDiscos = if (Test-Path $FicheroDiscos) { (Get-Item $FicheroDiscos).LastWriteTime } else { $null }
+    ActualizarTooltip
+    if (@(DiscosConectados)) { Avisar "Plan guardado" "Hay un disco de backup conectado. Haz clic aqui para hacer la primera copia." 'copiar' }
+    else { Avisar "Plan guardado" "Conecta tu disco de backup cuando quieras: te avisare para copiar." $null }
+}
+$miAsis.add_Click({ AbrirAsistente })
+
+# ---------- Actualizaciones ----------
+$script:releaseNueva = $null; $script:busquedaManual = $false
+$timerAct = New-Object Windows.Forms.Timer; $timerAct.Interval = 500
+function IniciarBusqueda([bool]$manual) { $script:busquedaManual = $manual; BuscarEnSegundoPlano; $timerAct.Start() }
+$timerAct.add_Tick({
+    $r = ResultadoBusqueda
+    if (-not $r) { return }
+    $timerAct.Stop()
+    if (-not $r.Ok) {
+        if ($script:busquedaManual) { [void](Dialogo $null "No se pudo comprobar" "No hay conexión o GitHub no responde. Vuelve a intentarlo más tarde.`n`n($($r.Error))") }
+        return
+    }
+    $rel = $r.Release
+    if ($rel -and (EsMasNueva $rel.Version)) {
+        $script:releaseNueva = $rel
+        if ($script:busquedaManual) { MostrarNovedades $rel }
+        elseif ($rel.Version -ne (LeerAjuste 'OmitirVersion')) { Avisar "BackupApp $($rel.Version) ya está disponible" "Haz clic aquí para ver las novedades e instalarla." 'actualizar' }
+    } elseif ($script:busquedaManual) { [void](Dialogo $null "Tienes la última versión" "BackupApp $Version está al día.") }
+})
+$miActual.add_Click({ IniciarBusqueda $true })
+
+# ---------- Revision ligera cada 15 s ----------
+function Revisar {
+    $script:ticks++
+
+    # El instalador o el actualizador piden cerrar el icono sin perder los cambios pendientes
+    if (Test-Path -LiteralPath $FicheroSalir) { Remove-Item -LiteralPath $FicheroSalir -Force; $timer.Stop(); Salir; return }
+
+    # a) Medicion diaria de tamanos (10 min despues de arrancar, con prioridad minima)
+    if ($script:medidorAntes -and -not (MedidorActivo)) { $script:medidorAntes = $false; MedicionTerminada }
+    if (-not (MedidorActivo) -and $script:ticks -ge 40 -and -not (Copiando)) {
+        $medidoHoy = (Test-Path $Historial) -and (Get-Item $Historial).LastWriteTime.Date -eq (Get-Date).Date
+        if (-not $medidoHoy -and $script:intentoMedicion.Date -lt (Get-Date).Date) { $script:intentoMedicion = Get-Date; LanzarMedicion }
+    }
+
+    # a2) Busqueda diaria de actualizaciones (2 minutos despues de arrancar)
+    if ($script:ticks -ge 8 -and -not (Copiando) -and (LeerAjuste 'UltimaBusqueda') -ne (Get-Date -Format 'yyyy-MM-dd')) {
+        GuardarAjuste 'UltimaBusqueda' (Get-Date -Format 'yyyy-MM-dd'); IniciarBusqueda $false
+    }
+
+    # b) Ha terminado la copia de algun disco? -> quitar sus cambios pendientes
+    $m = if (Test-Path $FicheroDiscos) { (Get-Item $FicheroDiscos).LastWriteTime } else { $null }
+    if ($m -ne $script:marcaDiscos) {
+        $script:marcaDiscos = $m
+        $nuevos = @(LeerDiscos)
+        $copiados = @($nuevos | Where-Object { $n = $_; $v = $script:discosCache | Where-Object { $_.Id -eq $n.Id }; $v -and $n.UltimaCopia -ne $v.UltimaCopia } | ForEach-Object { $_.Id })
+        $script:discosCache = $nuevos
+        if ($copiados) {
+            $rep = LeerReparto
+            foreach ($k in @($script:pend.Keys)) {
+                $u = $script:pend[$k]
+                if (-not $rep.ContainsKey($u) -or $copiados -contains $rep[$u]) { [void]$script:pend.Remove($k) }
+            }
+            $script:desbordado = $false
+            GuardarPend
+        }
+        $script:sucio = $true
+    }
+    if ($script:sucio) { ActualizarTooltip }
+    if ($script:sucio -and ($script:ticks % 20 -eq 0)) { GuardarPend; $script:sucio = $false }
+
+    # c) Discos conectados / desconectados
+    $letras = @(UnidadesDeDisco | ForEach-Object { $_.Name.Substring(0, 2) })
+    $nuevas = @($letras | Where-Object { $script:letrasAntes -notcontains $_ })
+    $script:letrasAntes = $letras
+    if ($nuevas -and -not (Copiando)) {
+        $con = @(DiscosConectados | Where-Object { $nuevas -contains $_.Letra })
+        if ($con) {
+            $txt = ($con | ForEach-Object { "'$($_.Nombre)' ($($_.Letra)): $(NumCambios $_.Id) cambios sin copiar" }) -join "`n"
+            Avisar "Disco de backup conectado" "$txt`nHaz clic aqui para copiar ahora." 'copiar'
+        } else {
+            $cand = @(DiscosCandidatos | Where-Object { $nuevas -contains $_.Name.Substring(0, 2) }) | Select-Object -First 1
+            if ($cand) {
+                $l = $cand.Name.Substring(0, 2)
+                Avisar "Disco nuevo detectado ($l, $(FmtTam $cand.TotalSize))" "Haz clic aqui si quieres usarlo como disco de backup. Las carpetas se repartiran automaticamente." "registrar:$l"
+            }
+        }
+    }
+
+    # d) Recordatorio periodico
+    if (Copiando) { return }
+    if (((Get-Date) - $script:ultimoRecordatorio).TotalHours -ge $HorasEntreRecordatorios) {
+        $toca = DiscosQueTocan
+        if (-not $Carpetas) {
+            $script:ultimoRecordatorio = Get-Date
+            Avisar "Backup sin configurar" "Todavia no has elegido que carpetas copiar. Haz clic aqui para abrir el asistente." 'asistente'
+        } elseif (-not $script:discosCache) {
+            $script:ultimoRecordatorio = Get-Date
+            Avisar "Backup sin configurar" "Conecta un disco externo para registrarlo como disco de backup." $null
+        } elseif ($toca) {
+            $script:ultimoRecordatorio = Get-Date
+            $con = @(DiscosConectados | ForEach-Object { $_.Id })
+            $nom = ($toca | ForEach-Object { $_.Nombre }) -join ", "
+            if ($toca | Where-Object { $con -contains $_.Id }) { Avisar "Toca la copia de seguridad" "Discos: $nom. Hay uno conectado: haz clic aqui para empezar." 'copiar' }
+            else { Avisar "Toca la copia de seguridad" "Conecta: $nom. Tienes $(NumCambios $null) cambios sin copiar." 'copiar' }
+        }
+    }
+}
+
+IniciarVigilancia
+$icono.Visible = $true
+ActualizarTooltip
+$timer = New-Object Windows.Forms.Timer
+$timer.Interval = 15000
+$timer.add_Tick({ Revisar })
+$timer.Start()
+# Primera ejecucion: sin carpetas elegidas, se abre el asistente
+if (-not $Carpetas) { $script:ultimoRecordatorio = Get-Date; AbrirAsistente }
+[GC]::Collect()
+[Windows.Forms.Application]::Run()
+$mutex.ReleaseMutex()

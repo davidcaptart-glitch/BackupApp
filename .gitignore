@@ -1,0 +1,12 @@
+# Datos de usuario y temporales
+*.csv
+pendientes.txt
+carpetas.txt
+logs/
+informes/
+# Carpetas personales de quien desarrolla (no se publican)
+personal/
+dist/
+
+# Instrucciones para Claude (personales, no se publican)
+CLAUDE.md
