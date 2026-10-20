@@ -340,7 +340,8 @@ $EnEspera = "ESPERA"   # en reparto.csv: unidad que no cabe en ningun disco; esp
 
 function Repartir($unidades, $tam, $discos, $rep) {
     # Plan de copias. Las unidades sin disco (o en espera) van al disco con mas espacio util libre,
-    # empezando por las carpetas de mas prioridad y, dentro de cada una, por las unidades grandes.
+    # empezando por las carpetas de mas prioridad y, dentro de cada prioridad, por las unidades pequenas: si no
+    # cabe todo, asi se protegen el mayor numero de carpetas y lo que queda en espera son las pocas gigantes.
     # Si una unidad no cabe en ningun disco se queda en espera ($EnEspera).
     # Una vez asignada, una unidad se queda siempre en su disco (no se mueven datos).
     # No guarda nada: sirve tambien para simular planes con discos aun no registrados.
@@ -348,7 +349,7 @@ function Repartir($unidades, $tam, $discos, $rep) {
     $oc = @{}; foreach ($d in $discos) { $oc[$d.Id] = [int64]0 }
     foreach ($k in @($rep.Keys)) { if ($oc.ContainsKey($rep[$k]) -and $tam.ContainsKey($k)) { $oc[$rep[$k]] += $tam[$k] } }
     $nuevas = @($unidades | Where-Object { -not $rep.ContainsKey($_.Clave) -or $ids -notcontains $rep[$_.Clave] })
-    foreach ($u in ($nuevas | Sort-Object { $_.Carpeta.Prioridad }, { -[int64]$tam[$_.Clave] })) {
+    foreach ($u in ($nuevas | Sort-Object { $_.Carpeta.Prioridad }, { [int64]$tam[$_.Clave] })) {
         $t = [int64]$tam[$u.Clave]
         $mejor = $discos | Where-Object { (EspacioUtil $_) - $oc[$_.Id] -ge $t } |
                  Sort-Object { (EspacioUtil $_) - $oc[$_.Id] } -Descending | Select-Object -First 1

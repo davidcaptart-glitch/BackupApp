@@ -1,5 +1,8 @@
 # Cambios
 
+## 0.4.6
+- Mejor reparto cuando no cabe todo: dentro de cada prioridad se empieza por las carpetas pequeñas, así se protegen muchas más carpetas y lo que queda esperando a un disco nuevo son solo las más grandes.
+
 ## 0.4.5
 - Arreglado: la medición de carpetas podía quedarse parada a mitad (por ejemplo en el 35 %) sin avanzar más.
 - Si una subcarpeta no se puede medir (sin permiso o en uso), se apunta y se sigue con las demás.
