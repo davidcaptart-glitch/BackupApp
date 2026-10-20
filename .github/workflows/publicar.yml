@@ -25,7 +25,7 @@ jobs:
     env:
       FIRMAR: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Comprobar que la etiqueta coincide con VERSION
         if: startsWith(github.ref, 'refs/tags/v')
@@ -45,7 +45,7 @@ jobs:
       - name: Subir el programa para firmarlo
         if: env.FIRMAR == 'true'
         id: programa
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: programa
           path: dist/BackupApp
@@ -70,7 +70,7 @@ jobs:
       - name: Subir el instalador para firmarlo
         if: env.FIRMAR == 'true'
         id: instalador
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: instalador
           path: dist/BackupApp-setup-*.exe
@@ -99,7 +99,7 @@ jobs:
           "Instalador: $setup | SHA-256: $h | firma: $f" | Tee-Object -Append $env:GITHUB_STEP_SUMMARY
 
       - name: Guardar el instalador como artefacto
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: BackupApp-setup
           path: |
