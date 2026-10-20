@@ -37,6 +37,9 @@ $MarcaDisco      = ".disco_backup"                        # fichero que identifi
 $FicheroAjustes  = Join-Path $Datos "ajustes.json"        # preferencias del usuario (tema...)
 $FicheroNubes    = Join-Path $Datos "nubes.csv"           # carpetas en la nube (OneDrive, Dropbox...) usadas como copia extra
 $CarpetaNube     = "BackupApp"                            # subcarpeta que se crea dentro de cada carpeta sincronizada
+$CarpetaRclone   = Join-Path $Datos "rclone"              # nube directa: rclone.exe y sus conexiones (nube_directa.ps1)
+$RcloneExe       = Join-Path $CarpetaRclone "rclone.exe"
+$RcloneConf      = Join-Path $CarpetaRclone "rclone.conf"
 
 $Version = "0.0.0"
 foreach ($v in @((Join-Path $Codigo "VERSION"), (Join-Path (Split-Path $Codigo -Parent) "VERSION"))) {
@@ -451,11 +454,15 @@ function LeerNubes {
 }
 function GuardarNubes($lista) {
     # Prioridad = hasta que prioridad se copia (1 = solo imprescindible, 2 = tambien lo normal)
-    @($lista) | Select-Object Id, Nombre, Proveedor, RaizSync, Capacidad, Prioridad, UltimaCopia, Dias, Ajeno |
+    # Tipo = carpeta (carpeta sincronizada) o rclone (nube directa, con Remoto y RemotoBase; Cifrado = si/no)
+    @($lista) | Select-Object Id, Nombre, Proveedor, RaizSync, Capacidad, Prioridad, UltimaCopia, Dias, Ajeno, Tipo, Remoto, RemotoBase, Cifrado |
         Export-Csv $FicheroNubes -Delimiter ';' -NoTypeInformation -Encoding UTF8
 }
 function RutaNube($n) { Join-Path $n.RaizSync $CarpetaNube }
-function NubeDisponible($n) { $n.RaizSync -and (Test-Path -LiteralPath $n.RaizSync) }
+function NubeDisponible($n) {
+    if ($n.Tipo -eq 'rclone') { return ((Test-Path -LiteralPath $RcloneExe) -and (RemotoExiste $n.Remoto.Split(':')[0])) }
+    return ($n.RaizSync -and (Test-Path -LiteralPath $n.RaizSync))
+}
 # Servicios conocidos: espacio gratis aproximado (para proponer la cuota) y descarga oficial de su programa de escritorio
 $ServiciosNube = @(
     [pscustomobject]@{ Proveedor = 'Google Drive'; Gratis = 15GB; Url = 'https://www.google.com/drive/download/' }
@@ -558,7 +565,8 @@ function CuotaSugerida($prov) { $s = $ServiciosNube | Where-Object { $_.Proveedo
     return [math]::Max([int64]0, [int64]$usado - [int64]$nuestro)
 }
 function MedirNube($n) {
-    # Actualiza Ajeno (y Capacidad, si la nube la da como unidad virtual: Google Drive, pCloud)
+    # Actualiza Ajeno (y Capacidad, si la nube la da como unidad virtual: Google Drive, pCloud, o por rclone)
+    if ($n.Tipo -eq 'rclone') { MedirNubeRclone $n; return }
     $q = try { Split-Path -Qualifier $n.RaizSync } catch { $null }
     $dr = if ($q) { New-Object IO.DriveInfo $q } else { $null }
     if ($dr -and $dr.IsReady -and ((EsUnidadGoogle $dr) -or $dr.VolumeLabel -like 'pCloud*')) {
@@ -575,10 +583,13 @@ function UnidadesParaNube($n, $unidades, $tam) {
     foreach ($u in ($cands | Sort-Object { $_.Carpeta.Prioridad }, { [int64]$tam[$_.Clave] })) {
         $c = $u.Carpeta.Origen
         # Ya esta en esta nube, o la carpeta de origen contiene la propia nube (se copiaria dentro de si misma)
-        if ((DentroDe $c $n.RaizSync) -or (DentroDe $n.RaizSync $c)) { $ya += $u; continue }
+        if ($n.RaizSync -and ((DentroDe $c $n.RaizSync) -or (DentroDe $n.RaizSync $c))) { $ya += $u; continue }
         $t = [int64]$tam[$u.Clave]
         if ($bytes + $t -le $util) { $sel += $u; $bytes += $t } else { $fuera += $u }
     }
     [pscustomobject]@{ Seleccion = $sel; Fuera = $fuera; YaEnNube = $ya; Bytes = $bytes; Util = [math]::Max([int64]0, $util)
                        BytesFuera = [int64](($fuera | ForEach-Object { [int64]$tam[$_.Clave] } | Measure-Object -Sum).Sum) }
 }
+
+# Nube directa (rclone)
+. (Join-Path $PSScriptRoot "nube_directa.ps1")

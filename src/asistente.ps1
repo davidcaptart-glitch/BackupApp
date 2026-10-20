@@ -221,12 +221,14 @@ function LlenarNubes {
     $a = $script:asis; $lista = $a.Win.FindName('ListaNubes'); $lista.Children.Clear()
     $reg = @(LeerNubes)
     $a.FilasNubes = New-Object 'System.Collections.Generic.List[object]'
-    foreach ($d in @(@(DetectarNubes) + $a.NubesManuales.ToArray())) {   # (@() sobre una List vacia falla en PowerShell 5.1)
-        if ($a.FilasNubes | Where-Object { $_.Info -and $_.Info.RaizSync -eq $d.RaizSync }) { continue }
-        $r = $reg | Where-Object { ($d.IdMarca -and $_.Id -eq $d.IdMarca) -or $_.RaizSync -eq $d.RaizSync } | Select-Object -First 1
+    # Las directas (rclone) registradas se muestran como una nube mas si su conexion sigue existiendo
+    $directas = @($reg | Where-Object { $_.Tipo -eq 'rclone' -and (NubeDisponible $_) } | ForEach-Object { InfoNubeDirecta $_ })
+    foreach ($d in @(@(DetectarNubes) + $directas + $a.NubesManuales.ToArray())) {   # (@() sobre una List vacia falla en PowerShell 5.1)
+        if ($a.FilasNubes | Where-Object { $_.Info -and (ClaveNube $_.Info) -eq (ClaveNube $d) }) { continue }
+        $r = $reg | Where-Object { ($d.IdMarca -and $_.Id -eq $d.IdMarca) -or (ClaveNube $_) -eq (ClaveNube $d) } | Select-Object -First 1
         $cuota = if ($d.Cuota) { [int64]$d.Cuota } elseif ($r) { [int64]$r.Capacidad } else { CuotaSugerida $d.Proveedor }
         if (-not $cuota) { $cuota = 5GB }
-        $t = [pscustomobject]@{ Clave = $(if ($r) { $r.Id } else { $d.RaizSync.ToLower() }); Info = $d; Registro = $r; Nombre = $(if ($r) { $r.Nombre } else { $d.Nombre })
+        $t = [pscustomobject]@{ Clave = $(if ($r) { $r.Id } else { ClaveNube $d }); Info = $d; Registro = $r; Nombre = $(if ($r) { $r.Nombre } else { $d.Nombre })
                                Marcar = $(if ($r) { $true } else { $d.Activa -eq $true }); Cuota = $cuota; CuotaFija = [bool]$d.Cuota
                                Prioridad = $(if ($r -and [int]$r.Prioridad -gt 0) { [int]$r.Prioridad } else { 1 }); Ajeno = $null }
         $a.FilasNubes.Add($t)
@@ -247,6 +249,11 @@ function LlenarNubes {
     }
     PintarComoConectar
 }
+function ClaveNube($n) { if ($n.Tipo -eq 'rclone') { "rclone:$($n.Remoto)".ToLower() } else { "$($n.RaizSync)".ToLower() } }
+function InfoNubeDirecta($r) {
+    [pscustomobject]@{ Proveedor = $r.Proveedor; Nombre = $r.Nombre; RaizSync = ''; Cuota = $(if ($r.Proveedor -ne 'Backblaze B2') { [int64]$r.Capacidad }); Libre = $null
+                       IdMarca = $null; Activa = $true; Tipo = 'rclone'; Remoto = $r.Remoto; RemotoBase = $r.RemotoBase; Cifrado = $r.Cifrado }
+}
 function GuardarDecisionNube($t) { $script:asis.DecisionNube[$t.Clave] = @{ Marcar = $t.Marcar; Cuota = $t.Cuota; Prioridad = $t.Prioridad } }
 function TarjetaNube($t, $k) {
     $i = $t.Info
@@ -254,10 +261,13 @@ function TarjetaNube($t, $k) {
     $chk.add_Click({ param($s, $e) $t = $script:asis.FilasNubes[$s.Tag]; $t.Marcar = [bool]$s.IsChecked; GuardarDecisionNube $t })
     $ico = Icono $GlifoNube 26 'Acento'; $ico.Margin = '14,0,14,0'
     $prov = if ($i) { $i.Proveedor } else { $t.Registro.Proveedor }
-    $sub = if ($i) { "$prov   $([char]0x00B7)   $($i.RaizSync)" } else { "$prov   $([char]0x00B7)   no se encuentra la carpeta $($t.Registro.RaizSync)" }
+    $directa = ($i -and $i.Tipo -eq 'rclone') -or $t.Registro.Tipo -eq 'rclone'
+    $sub = if ($directa) { "$prov   $([char]0x00B7)   conexión directa, sin carpeta en el PC" } elseif ($i) { "$prov   $([char]0x00B7)   $($i.RaizSync)" } else { "$prov   $([char]0x00B7)   no se encuentra la carpeta $($t.Registro.RaizSync)" }
     $chips = New-Object Windows.Controls.WrapPanel; $chips.Margin = '0,6,0,0'
     if ($t.Registro) { [void]$chips.Children.Add((Chip "En uso" 'acento')) }
-    if ($i -and $i.Activa -eq $true) { [void]$chips.Children.Add((Chip "$prov está abierto" 'acento')) }
+    if ($directa -and -not $i) { [void]$chips.Children.Add((Chip "Conexión no encontrada: vuelve a conectarla" 'aviso')) }
+    elseif ($directa) { [void]$chips.Children.Add((Chip "Conexión directa" 'acento')); if ($i.Cifrado -eq 'si') { [void]$chips.Children.Add((Chip "Cifrada" 'acento')) } }
+    elseif ($i -and $i.Activa -eq $true) { [void]$chips.Children.Add((Chip "$prov está abierto" 'acento')) }
     elseif ($i -and $i.Activa -eq $false) { [void]$chips.Children.Add((Chip "$prov no está abierto o no tiene sesión: no se subirá nada" 'aviso')) }
     elseif ($i) { [void]$chips.Children.Add((Chip "Carpeta sincronizada" 'normal')) }
     else { [void]$chips.Children.Add((Chip "Carpeta no encontrada" 'aviso')) }
@@ -325,6 +335,118 @@ function PintarComoConectar {
     }
     [void]$p.Children.Add($g)
 }
+$XamlDirecta = @"
+<Window $VentanaBase Title="Conectar una nube" Width="620" SizeToContent="Height" ResizeMode="NoResize" WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+  <StackPanel Margin="28,24,28,22">
+    <TextBlock Text="Conectar una cuenta directamente" FontSize="22" FontWeight="SemiBold"/>
+    <TextBlock Foreground="{DynamicResource Texto2}" TextWrapping="Wrap" Margin="0,6,0,16" Text="BackupApp subirá la copia sin necesitar el programa del servicio ni ocupar espacio en tu PC. Para ello usa rclone, un programa gratuito y de código abierto que se descarga la primera vez (unos 30 MB)."/>
+    <TextBlock Text="Servicio" FontSize="12" Foreground="{DynamicResource Texto2}" Margin="2,0,0,6"/>
+    <WrapPanel x:Name="Servicios"/>
+    <StackPanel x:Name="Claves" Margin="0,12,0,0"/>
+    <CheckBox x:Name="Cifrar" IsChecked="True" Margin="0,18,0,0" Content="Cifrar los archivos antes de subirlos (recomendado)"/>
+    <StackPanel x:Name="PanelClave" Margin="30,10,0,0">
+      <TextBlock Text="Contraseña para el cifrado" FontSize="12" Foreground="{DynamicResource Texto2}" Margin="0,0,0,4"/>
+      <PasswordBox x:Name="Clave1"/>
+      <TextBlock Text="Repítela" FontSize="12" Foreground="{DynamicResource Texto2}" Margin="0,8,0,4"/>
+      <PasswordBox x:Name="Clave2"/>
+      <TextBlock TextWrapping="Wrap" Margin="0,8,0,0" FontSize="12" Foreground="{DynamicResource Aviso}" Text="Apúntala en un sitio seguro: sin ella nadie puede recuperar los archivos de la nube, ni siquiera BackupApp."/>
+    </StackPanel>
+    <TextBlock x:Name="Estado" TextWrapping="Wrap" Margin="0,18,0,0" FontWeight="SemiBold"/>
+    <ProgressBar x:Name="Barra" Height="4" Margin="0,8,0,0" IsIndeterminate="True" BorderThickness="0" Foreground="{DynamicResource Acento}" Background="{DynamicResource Barra}" Visibility="Collapsed"/>
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
+      <Button x:Name="BtnCancelar" Content="Cancelar" Margin="0,0,8,0"/>
+      <Button x:Name="BtnConectar" Content="Conectar" Style="{DynamicResource Primario}" MinWidth="120"/>
+    </StackPanel>
+  </StackPanel>
+</Window>
+"@
+function MostrarConectarDirecta {
+    $w = NuevaVentana $XamlDirecta; $w.Owner = $script:asis.Win
+    $script:dir = @{ Win = $w; Servicio = $ServiciosRclone[0]; Cajas = @{}; Paso = $null; Ps = $null; H = $null; Proc = $null; Nombre = $null; Timer = $null }
+    foreach ($s in $ServiciosRclone) {
+        $rb = New-Object Windows.Controls.RadioButton; $rb.Style = $script:Estilos['Pastilla']; $rb.Content = $s.Nombre; $rb.GroupName = 'srv'; $rb.Tag = $s.Tipo
+        $rb.IsChecked = ($s.Tipo -eq 'drive'); $rb.Margin = '0,0,4,6'
+        $rb.add_Checked({ param($x, $e) $script:dir.Servicio = $ServiciosRclone | Where-Object { $_.Tipo -eq $x.Tag }; PintarClavesDirecta })
+        [void]$w.FindName('Servicios').Children.Add($rb)
+    }
+    $w.FindName('Cifrar').add_Click({ param($x, $e) $script:dir.Win.FindName('PanelClave').Visibility = $(if ($x.IsChecked) { 'Visible' } else { 'Collapsed' }) })
+    $w.FindName('BtnCancelar').add_Click({ $script:dir.Win.Close() })
+    $w.FindName('BtnConectar').add_Click({ EmpezarConexionDirecta })
+    $w.add_Closed({ $d = $script:dir; if ($d.Timer) { $d.Timer.Stop() }; if ($d.Proc -and -not $d.Proc.Proceso.HasExited) { try { $d.Proc.Proceso.Kill() } catch {} } })
+    PintarClavesDirecta
+    [void]$w.ShowDialog()
+}
+function PintarClavesDirecta {
+    # Servicios que no usan el navegador (Backblaze B2) piden sus claves
+    $d = $script:dir; $p = $d.Win.FindName('Claves'); $p.Children.Clear(); $d.Cajas = @{}
+    if (-not $d.Servicio.Claves) { $x = Texto "Al pulsar Conectar se abrirá el navegador para que inicies sesión en $($d.Servicio.Nombre) y des permiso a rclone." 12 'Normal' 'Texto2'; [void]$p.Children.Add($x); return }
+    foreach ($c in $d.Servicio.Claves) {
+        $l = Texto $c[1] 12 'Normal' 'Texto2'; $l.Margin = '0,6,0,4'; [void]$p.Children.Add($l)
+        $tb = New-Object Windows.Controls.TextBox; [void]$p.Children.Add($tb); $d.Cajas[$c[0]] = $tb
+    }
+}
+function EstadoDirecta($txt, $ocupado = $true) {
+    $w = $script:dir.Win; $w.FindName('Estado').Text = $txt
+    $w.FindName('Barra').Visibility = $(if ($ocupado) { 'Visible' } else { 'Collapsed' })
+    $w.FindName('BtnConectar').IsEnabled = -not $ocupado
+}
+function EmpezarConexionDirecta {
+    $d = $script:dir; $w = $d.Win
+    if ($w.FindName('Cifrar').IsChecked) {
+        $c1 = $w.FindName('Clave1').Password; $c2 = $w.FindName('Clave2').Password
+        if ($c1.Length -lt 8) { EstadoDirecta "La contraseña debe tener al menos 8 caracteres." $false; return }
+        if ($c1 -ne $c2) { EstadoDirecta "Las dos contraseñas no coinciden." $false; return }
+    }
+    foreach ($k in $d.Cajas.Keys) { if (-not $d.Cajas[$k].Text.Trim()) { EstadoDirecta "Rellena las claves de $($d.Servicio.Nombre)." $false; return } }
+    $d.Timer = New-Object Windows.Threading.DispatcherTimer; $d.Timer.Interval = [TimeSpan]::FromMilliseconds(300)
+    $d.Timer.add_Tick({ SeguirConexionDirecta })
+    if (RcloneInstalado) { $d.Paso = 'login' }
+    else {
+        # La descarga va en otro hilo para que la ventana no se congele
+        EstadoDirecta "Descargando rclone desde rclone.org y comprobando que es el original..."
+        $ps = [powershell]::Create(); [void]$ps.AddScript({ param($c) . $c; InstalarRclone }.ToString()).AddArgument((Join-Path $Codigo "config.ps1"))
+        $d.Ps = $ps; $d.H = $ps.BeginInvoke(); $d.Paso = 'instalar'
+    }
+    $d.Timer.Start()
+}
+function SeguirConexionDirecta {
+    $d = $script:dir; $w = $d.Win
+    switch ($d.Paso) {
+        'instalar' {
+            if (-not $d.H.IsCompleted) { return }
+            $err = @($d.Ps.EndInvoke($d.H)) | Select-Object -First 1; $d.Ps.Dispose()
+            if ($err) { $d.Timer.Stop(); EstadoDirecta $err $false; return }
+            $d.Paso = 'login'
+        }
+        'login' {
+            $d.Nombre = NuevoNombreRemoto
+            $claves = @{}; foreach ($k in $d.Cajas.Keys) { $claves[$k] = $d.Cajas[$k].Text.Trim() }
+            $d.Proc = ConectarCuentaRclone $d.Servicio $d.Nombre $claves
+            EstadoDirecta $(if ($d.Servicio.Claves) { "Comprobando las claves de $($d.Servicio.Nombre)..." } else { "Se ha abierto el navegador: inicia sesión en $($d.Servicio.Nombre) y acepta el permiso. Después vuelve aquí." })
+            $d.Paso = 'esperando'
+        }
+        'esperando' {
+            if (-not $d.Proc.Proceso.HasExited) { return }
+            $d.Timer.Stop()
+            if ($d.Proc.Proceso.ExitCode -ne 0 -or -not (RemotoExiste $d.Nombre)) {
+                $e = ("$($d.Proc.Error.Result)" -split "`r?`n" | Where-Object { $_ -match 'ERROR|Failed|error' } | Select-Object -Last 1)
+                [void](Rclone @('config', 'delete', $d.Nombre))
+                EstadoDirecta "No se pudo conectar con $($d.Servicio.Nombre). $e" $false; return
+            }
+            $cifrar = [bool]$w.FindName('Cifrar').IsChecked
+            EstadoDirecta "Conectado. Preparando la copia$(if ($cifrar) { ' cifrada' })..."
+            if ($cifrar -and -not (CrearCifrado $d.Nombre $w.FindName('Clave1').Password)) { EstadoDirecta "No se pudo preparar el cifrado." $false; return }
+            $q = CuotaRclone "$($d.Nombre):"
+            $info = [pscustomobject]@{ Proveedor = $d.Servicio.Nombre; Nombre = "$($d.Servicio.Nombre) (directo)"; RaizSync = ''; Cuota = $(if ($q) { $q.Total }); Libre = $(if ($q) { $q.Libre })
+                                       IdMarca = $null; Activa = $true; Tipo = 'rclone'; Remoto = $(if ($cifrar) { "$($d.Nombre)_c:" } else { "$($d.Nombre):BackupApp" })
+                                       RemotoBase = "$($d.Nombre):"; Cifrado = $(if ($cifrar) { 'si' } else { 'no' }) }
+            $script:asis.NubesManuales.Add($info)
+            $script:asis.DecisionNube[(ClaveNube $info)] = @{ Marcar = $true; Cuota = $(if ($q) { $q.Total } else { 100GB }); Prioridad = 1 }
+            $w.Close()
+            LlenarNubes
+        }
+    }
+}
 function AnadirNubeManual {
     $r = ElegirCarpeta $script:asis.Win "Elige la carpeta que sincroniza tu nube o tu NAS"
     if (-not $r) { return }
@@ -340,20 +462,25 @@ function NubesElegidas {
         if (-not $i) {   # registrada pero ahora no se encuentra: se conserva tal cual
             $r = $t.Registro
             [pscustomobject]@{ Id = $r.Id; Nombre = $r.Nombre; Proveedor = $r.Proveedor; RaizSync = $r.RaizSync; Capacidad = [int64]$t.Cuota; Prioridad = $t.Prioridad
-                               UltimaCopia = $r.UltimaCopia; Dias = $(if ($r.Dias) { $r.Dias } else { 7 }); Ajeno = [int64]$r.Ajeno; Nueva = $false; Activa = $null }
+                               UltimaCopia = $r.UltimaCopia; Dias = $(if ($r.Dias) { $r.Dias } else { 7 }); Ajeno = [int64]$r.Ajeno; Nueva = $false; Activa = $null
+                               Tipo = $r.Tipo; Remoto = $r.Remoto; RemotoBase = $r.RemotoBase; Cifrado = $r.Cifrado }
             continue
         }
-        if ($null -eq $t.Ajeno) { $t.Ajeno = AjenoNube $i.RaizSync $i.Cuota $i.Libre }
+        if ($null -eq $t.Ajeno) {
+            $t.Ajeno = if ($i.Tipo -eq 'rclone') { if ($t.Registro) { [int64]$t.Registro.Ajeno } elseif ($i.Cuota -and $null -ne $i.Libre) { [int64]$i.Cuota - [int64]$i.Libre } else { 0 } }
+                       else { AjenoNube $i.RaizSync $i.Cuota $i.Libre }
+        }
         [pscustomobject]@{ Id = $(if ($t.Registro) { $t.Registro.Id } elseif ($i.IdMarca) { $i.IdMarca } else { "nube:$($i.RaizSync)" }); Nombre = $t.Nombre; Proveedor = $i.Proveedor
                            RaizSync = $i.RaizSync; Capacidad = [int64]$t.Cuota; Prioridad = $t.Prioridad; UltimaCopia = $(if ($t.Registro) { $t.Registro.UltimaCopia } else { '' })
-                           Dias = 7; Ajeno = [int64]$t.Ajeno; Nueva = -not $t.Registro; Activa = $i.Activa }
+                           Dias = 7; Ajeno = [int64]$t.Ajeno; Nueva = -not $t.Registro; Activa = $i.Activa
+                           Tipo = $(if ($i.Tipo) { $i.Tipo } else { 'carpeta' }); Remoto = $i.Remoto; RemotoBase = $i.RemotoBase; Cifrado = $i.Cifrado }
     }
 }
 
 # ---------- Paso 3: plan ----------
 function TarjetaPlanNube($np) {
     $n = $np.Nube; $p = $np.P
-    $cab = Fila @((Icono $GlifoNube 22 'Acento'), (Apilar @((Texto $n.Nombre 15 'SemiBold'), (Texto "Copia extra en la nube $([char]0x00B7) se sube con $($n.Proveedor)" 11.5 'Normal' 'Texto2'))), (Chip "Cada semana, sola" 'acento')) @('Auto', '*', 'Auto')
+    $cab = Fila @((Icono $GlifoNube 22 'Acento'), (Apilar @((Texto $n.Nombre 15 'SemiBold'), (Texto $(if ($n.Tipo -eq 'rclone') { "Copia extra en la nube $([char]0x00B7) se sube directamente$(if ($n.Cifrado -eq 'si') { ', cifrada' })" } else { "Copia extra en la nube $([char]0x00B7) se sube con $($n.Proveedor)" }) 11.5 'Normal' 'Texto2'))), (Chip "Cada semana, sola" 'acento')) @('Auto', '*', 'Auto')
     $cab.Children[1].Margin = '12,0,0,0'
     $uso = Apilar @((BarraUso ($p.Bytes / [math]::Max(1.0, [double]$p.Util))), (Texto "$(TamTxt $p.Bytes) de $(TamTxt $p.Util) disponibles en tu espacio de $(TamTxt $n.Capacidad)" 12 'Normal' 'Texto2'))
     $uso.Margin = '0,12,0,8'; $uso.Children[1].Margin = '0,6,0,0'
@@ -472,7 +599,10 @@ function GuardarPlanAsis {
     foreach ($d in $nuevos) { $msg += "`n`n$([char]0x2022) Se registrará el disco '$($d.NombreReal)' ($($d.Letra)): se crea en él la carpeta $CarpetaBackup con una marca oculta. No se borra nada del disco." }
     foreach ($d in $quitados) { $msg += "`n`n$([char]0x2022) Se dejará de usar el disco '$($d.Nombre)'. No se borra nada de él." }
     $nubes = @($a.NubesPlan | ForEach-Object { $_.Nube })
-    foreach ($n in @($nubes | Where-Object { $_.Nueva })) { $msg += "`n`n$([char]0x2022) Se guardará una copia de lo imprescindible en '$($n.Nombre)' (carpeta $(Join-Path $n.RaizSync $CarpetaNube)). La sube $($n.Proveedor)." }
+    foreach ($n in @($nubes | Where-Object { $_.Nueva })) {
+        if ($n.Tipo -eq 'rclone') { $msg += "`n`n$([char]0x2022) Se subirá una copia de lo imprescindible a '$($n.Nombre)' directamente$(if ($n.Cifrado -eq 'si') { ', cifrada con tu contraseña' })." }
+        else { $msg += "`n`n$([char]0x2022) Se guardará una copia de lo imprescindible en '$($n.Nombre)' (carpeta $(Join-Path $n.RaizSync $CarpetaNube)). La sube $($n.Proveedor)." }
+    }
     foreach ($n in @(LeerNubes | Where-Object { @($nubes | ForEach-Object { $_.Id }) -notcontains $_.Id })) { $msg += "`n`n$([char]0x2022) Se dejará de copiar en '$($n.Nombre)'. Lo que ya hay en la nube no se borra." }
     if (-not $a.SinPreguntar -and (Dialogo $a.Win "Guardar el plan" $msg @('Cancelar', 'Guardar plan') 'Guardar plan') -ne 'Guardar plan') { return $false }
 
@@ -497,7 +627,7 @@ function GuardarPlanAsis {
     # Nubes: las nuevas reciben su Id y su carpeta BackupApp con la marca
     foreach ($n in $nubes) {
         if ($n.Id -like 'nube:*') { $n.Id = [guid]::NewGuid().ToString() }
-        if ($n.Nueva) { try { $r = RutaNube $n; New-Item -ItemType Directory -Path $r -Force | Out-Null; EscribirMarca $r $n.Id $n.Nombre } catch {} }
+        if ($n.Nueva -and $n.Tipo -ne 'rclone') { try { $r = RutaNube $n; New-Item -ItemType Directory -Path $r -Force | Out-Null; EscribirMarca $r $n.Id $n.Nombre } catch {} }
     }
     GuardarNubes $nubes
     # Los tamanos medidos se guardan para que el icono y la copia no tengan que volver a medir
@@ -554,9 +684,12 @@ $XamlAsistente = @"
             <StackPanel>
               <StackPanel x:Name="ListaDiscos"/>
               <TextBlock Text="En la nube" FontSize="18" FontWeight="SemiBold" Margin="0,22,0,2"/>
-              <TextBlock Foreground="{DynamicResource Texto2}" TextWrapping="Wrap" Margin="0,0,0,12" Text="Una copia extra de lo más importante fuera de casa, por si le pasa algo al PC y al disco a la vez. Se guarda en la carpeta de tu servicio y su programa la sube."/>
+              <TextBlock Foreground="{DynamicResource Texto2}" TextWrapping="Wrap" Margin="0,0,0,12" Text="Una copia extra de lo más importante fuera de casa, por si le pasa algo al PC y al disco a la vez. Se guarda en la carpeta de tu servicio y su programa la sube, o va directa a tu cuenta (y cifrada, si quieres) si la conectas aquí."/>
               <StackPanel x:Name="ListaNubes"/>
-              <Button x:Name="BtnOtraNube" Content="+  Otra carpeta en la nube o NAS" HorizontalAlignment="Left" Margin="0,4,0,0"/>
+              <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                <Button x:Name="BtnDirecta" Content="+  Conectar una cuenta directamente" Margin="0,0,8,0"/>
+                <Button x:Name="BtnOtraNube" Content="+  Otra carpeta en la nube o NAS"/>
+              </StackPanel>
               <StackPanel x:Name="ComoConectar" Margin="0,18,0,0"/>
             </StackPanel>
           </ScrollViewer>
@@ -631,6 +764,7 @@ function MostrarAsistente($alTerminar = $null, [switch]$Modal) {
     $w.FindName('BtnAnadir').add_Click({ AnadirCarpetaAsis })
     $w.FindName('BtnActualizar').add_Click({ LlenarDiscos; LlenarNubes })
     $w.FindName('BtnOtraNube').add_Click({ AnadirNubeManual })
+    $w.FindName('BtnDirecta').add_Click({ MostrarConectarDirecta })
     $w.FindName('BtnAtras').add_Click({ IrAPaso ($script:asis.Paso - 1) })
     $w.FindName('BtnSig').add_Click({ Siguiente })
     $w.FindName('BtnCancelar').add_Click({ $script:asis.Win.Close() })

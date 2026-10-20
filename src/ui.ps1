@@ -236,6 +236,25 @@ $EstilosXaml = @'
       </Setter.Value>
     </Setter>
   </Style>
+  <Style TargetType="PasswordBox">
+    <Setter Property="Foreground" Value="{DynamicResource Texto}"/>
+    <Setter Property="Background" Value="{DynamicResource Fondo}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource Borde}"/>
+    <Setter Property="CaretBrush" Value="{DynamicResource Texto}"/>
+    <Setter Property="Padding" Value="8,6"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="PasswordBox">
+          <Border x:Name="b" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="6">
+            <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"/>
+          </Border>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="b" Property="BorderBrush" Value="{DynamicResource Acento}"/></Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
   <Style TargetType="ScrollBar">
     <Setter Property="Width" Value="8"/>
     <Setter Property="MinWidth" Value="8"/>
@@ -378,6 +397,12 @@ function ElegirCarpeta($dueno, $titulo) {
 function Dialogo($dueno, $titulo, $texto, $botones = @('Aceptar'), $primario = $null, $conEntrada = $null) {
     # Devuelve el texto del boton pulsado (o $null si se cierra). Con $conEntrada muestra una caja de texto
     # con ese valor inicial y deja lo escrito en $script:EntradaDialogo.
+    # Modo de prueba ($env:BACKUPAPP_PRUEBA): no muestra nada, escribe el texto y responde con la opcion principal.
+    if ($env:BACKUPAPP_PRUEBA) {
+        $r = if ($primario) { $primario } else { $botones[-1] }
+        [Console]::WriteLine("[DIALOGO] $titulo | $($texto -replace "`n", ' / ') -> $r")
+        $script:EntradaDialogo = $conEntrada; return $r
+    }
     $w = NuevaVentana "<Window $VentanaBase Title=""BackupApp"" SizeToContent=""Height"" Width=""460"" ResizeMode=""NoResize"" WindowStartupLocation=""CenterOwner"" ShowInTaskbar=""False""><StackPanel Margin=""24,22,24,20""><TextBlock x:Name=""T"" FontSize=""18"" FontWeight=""SemiBold"" TextWrapping=""Wrap""/><TextBlock x:Name=""X"" Margin=""0,10,0,0"" TextWrapping=""Wrap"" Foreground=""{DynamicResource Texto2}""/><TextBox x:Name=""E"" Margin=""0,14,0,0"" Visibility=""Collapsed""/><StackPanel x:Name=""B"" Orientation=""Horizontal"" HorizontalAlignment=""Right"" Margin=""0,22,0,0""/></StackPanel></Window>"
     if ($dueno) { try { $w.Owner = $dueno } catch { $w.WindowStartupLocation = 'CenterScreen' } } else { $w.WindowStartupLocation = 'CenterScreen'; $w.Topmost = $true }
     $w.FindName('T').Text = $titulo; $w.FindName('X').Text = $texto

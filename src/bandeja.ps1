@@ -190,7 +190,7 @@ function RenombrarDesdeMenu($id) {
 }
 function OlvidarNube($id) {
     $n = LeerNubes | Where-Object { $_.Id -eq $id } | Select-Object -First 1
-    if ((Dialogo $null "Dejar de copiar en $($n.Nombre)" "BackupApp dejará de copiar en la nube. Lo que ya hay en $(RutaNube $n) no se borra; puedes borrarlo tú si quieres liberar espacio." @('Cancelar', 'Dejar de copiar') 'Dejar de copiar') -ne 'Dejar de copiar') { return }
+    if ((Dialogo $null "Dejar de copiar en $($n.Nombre)" "BackupApp dejará de copiar en la nube. Lo que ya está subido no se borra$(if ($n.Tipo -eq 'rclone') { ' (está en la carpeta BackupApp de tu cuenta)' } else { ": está en $(RutaNube $n)" }); puedes borrarlo tú si quieres liberar espacio." @('Cancelar', 'Dejar de copiar') 'Dejar de copiar') -ne 'Dejar de copiar') { return }
     GuardarNubes @(LeerNubes | Where-Object { $_.Id -ne $id })
 }
 function MenuDiscos {
@@ -214,7 +214,7 @@ function MenuDiscos {
     foreach ($n in @(LeerNubes)) {
         $ult = if ($n.UltimaCopia) { "copia " + $n.UltimaCopia.Substring(0, 10) } else { "sin copias" }
         $it = MI "$($n.Nombre) (nube)  -  $(if (NubeDisponible $n) { $ult } else { 'carpeta no encontrada' })"
-        if (NubeDisponible $n) { $ab = MI "Abrir carpeta"; $ab.Tag = (RutaNube $n); $ab.add_Click({ param($s, $e) New-Item -ItemType Directory -Path $s.Tag -Force | Out-Null; Start-Process explorer.exe $s.Tag }); [void]$it.DropDownItems.Add($ab) }
+        if ((NubeDisponible $n) -and $n.Tipo -ne 'rclone') { $ab = MI "Abrir carpeta"; $ab.Tag = (RutaNube $n); $ab.add_Click({ param($s, $e) New-Item -ItemType Directory -Path $s.Tag -Force | Out-Null; Start-Process explorer.exe $s.Tag }); [void]$it.DropDownItems.Add($ab) }
         $ol = MI "Dejar de copiar aquí"; $ol.Tag = $n.Id; $ol.add_Click({ param($s, $e) OlvidarNube $s.Tag }); [void]$it.DropDownItems.Add($ol)
         [void]$miDiscos.DropDownItems.Add($it)
     }
@@ -374,60 +374,105 @@ function MedicionTerminada {
     } elseif ($llenos) {
         Avisar "Un disco se esta llenando" ((($llenos | ForEach-Object { "$($_.Nombre): {0:N0} %" -f $_.Uso }) -join "`n") + "`nLas carpetas nuevas iran a los discos con mas espacio.") 'tamanos'
     }
-    if ($script:formTam -and $script:formTam.Visible) { RellenarTamanos }
+    if ($script:formTam -and $script:formTam.IsVisible) { RellenarTamanos }
 }
-function NuevaLista($nombre, $y, $alto, $cols, $anchor) {
-    $lv = New-Object Windows.Forms.ListView; $lv.Name = $nombre; $lv.View = 'Details'; $lv.FullRowSelect = $true
-    $lv.SetBounds(12, $y, 860, $alto); $lv.Anchor = $anchor
-    foreach ($c in $cols) { [void]$lv.Columns.Add($c[0], $c[1]) }
-    return $lv
+$XamlTamanos = @"
+<Window $VentanaBase Title="Tamaño de las carpetas" Width="940" Height="760" MinWidth="720" MinHeight="520" WindowStartupLocation="CenterScreen">
+  <Grid Margin="34,28,34,24">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <TextBlock Text="Tamaño de tus carpetas" FontSize="28" FontWeight="SemiBold" FontFamily="Segoe UI Variable Display, Segoe UI"/>
+    <TextBlock x:Name="Info" Grid.Row="1" Foreground="{DynamicResource Texto2}" Margin="0,6,0,16"/>
+    <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"><StackPanel x:Name="Contenido"/></ScrollViewer>
+    <DockPanel Grid.Row="3" Margin="0,18,0,0">
+      <Button x:Name="BtnMedir" Content="Medir ahora" Margin="0,0,8,0"/>
+      <Button x:Name="BtnExcel" Content="Abrir el historial en Excel"/>
+      <Button x:Name="BtnCerrar" Content="Cerrar" Style="{DynamicResource Primario}" MinWidth="110" HorizontalAlignment="Right"/>
+    </DockPanel>
+  </Grid>
+</Window>
+"@
+function Seccion($titulo) { $x = Texto $titulo 16 'SemiBold'; $x.Margin = '2,14,0,8'; return $x }
+function ChipDif($b, $sufijo) {
+    if ($null -eq $b) { return $null }
+    $tipo = if ($b -gt 0) { 'aviso' } else { 'acento' }
+    return (Chip "$(FmtDif $b) $sufijo" $tipo)
 }
-function Fila($lv, $valores) {
-    $it = New-Object Windows.Forms.ListViewItem ([string]$valores[0])
-    foreach ($v in $valores[1..($valores.Count - 1)]) { [void]$it.SubItems.Add([string]$v) }
-    [void]$lv.Items.Add($it)
+function GraficoMensual($filas) {
+    # Barras con el total de cada mes (ultimos 12): cada barra es la suma de la ultima medicion de cada carpeta en ese mes
+    $meses = @($filas | Group-Object Mes | Sort-Object Name | Select-Object -Last 12 | ForEach-Object { [pscustomobject]@{ Mes = $_.Name; Bytes = [int64](($_.Group | Measure-Object Bytes -Sum).Sum) } })
+    if ($meses.Count -lt 2) { return (Texto "La evolución aparecerá cuando haya mediciones de al menos dos meses." 12 'Normal' 'Texto2') }
+    $max = [double](($meses | Measure-Object Bytes -Maximum).Maximum); $min = [double](($meses | Measure-Object Bytes -Minimum).Minimum)
+    $base = [math]::Max(0.0, $min - ($max - $min) * 0.5)   # para que se noten las diferencias entre meses
+    $g = New-Object Windows.Controls.Primitives.UniformGrid; $g.Rows = 1; $g.Height = 170
+    $nombres = @('', 'ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic')
+    for ($k = 0; $k -lt $meses.Count; $k++) {
+        $m = $meses[$k]
+        $alto = 20 + 110 * (($m.Bytes - $base) / [math]::Max(1.0, $max - $base))
+        $barra = New-Object Windows.Controls.Border; $barra.Height = $alto; $barra.CornerRadius = '4,4,0,0'; $barra.Margin = '6,0,6,0'; $barra.VerticalAlignment = 'Bottom'
+        Recurso $barra ([Windows.Controls.Border]::BackgroundProperty) $(if ($k -eq $meses.Count - 1) { 'Acento' } else { 'AcentoSuave' })
+        $barra.ToolTip = "$($m.Mes): $(FmtTam $m.Bytes)"
+        $valor = Texto (FmtTam $m.Bytes) 10.5 'Normal' 'Texto2'; $valor.HorizontalAlignment = 'Center'; $valor.TextWrapping = 'NoWrap'; $valor.Margin = '0,0,0,4'
+        $mes = Texto $nombres[[int]$m.Mes.Substring(5, 2)] 11 'Normal' 'Texto2'; $mes.HorizontalAlignment = 'Center'; $mes.Margin = '0,6,0,0'
+        $col = New-Object Windows.Controls.DockPanel; $col.LastChildFill = $false
+        [Windows.Controls.DockPanel]::SetDock($mes, 'Bottom'); [Windows.Controls.DockPanel]::SetDock($barra, 'Bottom'); [Windows.Controls.DockPanel]::SetDock($valor, 'Bottom')
+        [void]$col.Children.Add($mes); [void]$col.Children.Add($barra); [void]$col.Children.Add($valor)
+        [void]$g.Children.Add($col)
+    }
+    return $g
 }
 function RellenarTamanos {
-    $f = $script:formTam
-    foreach ($n in 'lvRes', 'lvDis', 'lvMes') { $f.Controls[$n].Items.Clear() }
+    $w = $script:formTam; if (-not $w) { return }
+    $c = $w.FindName('Contenido'); $c.Children.Clear()
     $res = @(Resumen)
-    foreach ($r in $res) {
-        Fila $f.Controls['lvRes'] @($r.Carpeta, (FmtTam $r.Actual), $(if ($null -ne $r.Archivos) { "{0:N0}" -f $r.Archivos } else { "-" }), (FmtDif $r.Mes), (FmtDif $r.Anio))
-    }
-    foreach ($d in (EstadoDiscos)) {
-        Fila $f.Controls['lvDis'] @($d.Nombre, (FmtTam $d.Capacidad), (FmtTam $d.Asignado), $(if ($null -ne $d.Uso) { "{0:N0} %" -f $d.Uso } else { "-" }), $(if ($d.Ultima) { $d.Ultima } else { "nunca" }))
-    }
-    foreach ($m in (EvolucionMensual)) { Fila $f.Controls['lvMes'] @($m.Mes, $m.Carpeta, (FmtTam $m.Bytes), (FmtDif $m.Cambio)) }
-    $total = ($res | Where-Object { $null -ne $_.Actual } | Measure-Object Actual -Sum).Sum
+    $total = [int64](($res | Where-Object { $null -ne $_.Actual } | Measure-Object Actual -Sum).Sum)
+    $mes = @($res | Where-Object { $null -ne $_.Mes }); $anio = @($res | Where-Object { $null -ne $_.Anio })
     $fecha = ($res | Where-Object { $_.Fecha } | Sort-Object Fecha | Select-Object -Last 1).Fecha
-    $txt = if ($fecha) { "Ultima medicion: $($fecha.ToString('dd/MM/yyyy'))   |   Total: $(FmtTam $total)" } else { "Todavia no hay mediciones. Pulsa 'Medir ahora'." }
-    if (MedidorActivo) { $txt += "   |   Midiendo..." }
-    $f.Controls['lblInfo'].Text = $txt
+    $w.FindName('Info').Text = if ($fecha) { "Última medición: $($fecha.ToString('dd/MM/yyyy'))$(if (MedidorActivo) { "   $([char]0x00B7)   Midiendo ahora..." })" } else { "Todavía no hay mediciones. Pulsa «Medir ahora» (tarda unos minutos y va en segundo plano)." }
+    $tiles = New-Object Windows.Controls.Primitives.UniformGrid; $tiles.Columns = 3
+    foreach ($x in @(@('Total', (FmtTam $total), 'Texto'),
+                     @('Cambio en un mes', $(if ($mes) { FmtDif (($mes | Measure-Object Mes -Sum).Sum) } else { '-' }), 'Acento'),
+                     @('Cambio en un año', $(if ($anio) { FmtDif (($anio | Measure-Object Anio -Sum).Sum) } else { '-' }), 'Acento'))) {
+        $t = Tarjeta (Apilar @((Texto $x[0] 12 'Normal' 'Texto2'), (Texto $x[1] 24 'SemiBold' $x[2]))); $t.Margin = '0,0,8,0'; [void]$tiles.Children.Add($t)
+    }
+    $tiles.Children[2].Margin = '0'
+    [void]$c.Children.Add($tiles)
+    [void]$c.Children.Add((Seccion "Evolución mes a mes"))
+    [void]$c.Children.Add((Tarjeta (GraficoMensual @(EvolucionMensual))))
+    [void]$c.Children.Add((Seccion "Carpetas"))
+    foreach ($r in ($res | Sort-Object { [int64]$_.Actual } -Descending)) {
+        $chips = New-Object Windows.Controls.WrapPanel; $chips.HorizontalAlignment = 'Right'
+        foreach ($ch in @((ChipDif $r.Mes 'en un mes'), (ChipDif $r.Anio 'en un año'))) { if ($ch) { [void]$chips.Children.Add($ch) } }
+        $det = "$($r.Carpeta)$(if ($null -ne $r.Archivos) { "   $([char]0x00B7)   {0:N0} archivos" -f $r.Archivos })"
+        $info = Apilar @((Texto (Split-Path $r.Carpeta -Leaf) 14 'SemiBold'), (Texto $det 11.5 'Normal' 'Texto2')); $info.Margin = '12,0,12,0'
+        $tam = Texto (FmtTam $r.Actual) 15 'SemiBold'; $tam.Margin = '12,0,0,0'
+        $f = Fila @((Icono ([string][char]0xE8B7) 18 'Acento'), $info, $chips, $tam) @('Auto', '*', 'Auto', 'Auto')
+        [void]$c.Children.Add((Tarjeta $f))
+    }
+    $dis = @(EstadoDiscos)
+    if ($dis) {
+        [void]$c.Children.Add((Seccion "Discos de backup"))
+        foreach ($d in $dis) {
+            $uso = if ($null -ne $d.Uso) { $d.Uso / 100 } else { 0 }
+            $info = Apilar @((Texto $d.Nombre 14 'SemiBold'), (Texto "$(FmtTam $d.Asignado) asignados de $(FmtTam $d.Capacidad)   $([char]0x00B7)   $(if ($d.Ultima) { "última copia $($d.Ultima)" } else { 'sin copias aún' })" 11.5 'Normal' 'Texto2'))
+            $info.Margin = '12,0,16,0'
+            $barra = BarraUso $uso $(if ($uso -gt 0.9) { 'Aviso' } else { 'Acento' }); $barra.Width = 200
+            $f = Fila @((Icono ([string][char]0xEDA2) 18 'Acento'), $info, $barra, (Texto $(if ($null -ne $d.Uso) { "{0:N0} %" -f $d.Uso } else { '-' }) 14 'SemiBold')) @('Auto', '*', 'Auto', 'Auto')
+            $f.Children[3].Margin = '12,0,0,0'
+            [void]$c.Children.Add((Tarjeta $f))
+        }
+    }
 }
 function MostrarTamanos {
-    if ($script:formTam -and -not $script:formTam.IsDisposed) { RellenarTamanos; $script:formTam.Show(); $script:formTam.Activate(); return }
-    $f = New-Object Windows.Forms.Form
-    $f.Text = "Tamano de las carpetas y discos del backup"; $f.Size = New-Object Drawing.Size(900, 700)
-    $f.StartPosition = 'CenterScreen'; $f.Font = New-Object Drawing.Font("Segoe UI", 9)
-    $lbl  = New-Object Windows.Forms.Label; $lbl.Name = 'lblInfo'; $lbl.SetBounds(12, 10, 860, 20); $lbl.Anchor = 'Top,Left,Right'
-    $lv1  = NuevaLista 'lvRes' 35 130 @(@("Carpeta", 380), @("Tamano", 110), @("Archivos", 110), @("vs hace 1 mes", 120), @("vs hace 1 ano", 120)) 'Top,Left,Right'
-    $l2   = New-Object Windows.Forms.Label; $l2.Text = "Discos de backup (asignado = lo que les toca guardar segun el reparto)"; $l2.SetBounds(12, 172, 860, 20)
-    $lv2  = NuevaLista 'lvDis' 195 105 @(@("Disco", 250), @("Capacidad", 130), @("Asignado", 130), @("Uso", 90), @("Ultima copia", 160)) 'Top,Left,Right'
-    $l3   = New-Object Windows.Forms.Label; $l3.Text = "Evolucion mes a mes (ultima medicion de cada mes)"; $l3.SetBounds(12, 308, 860, 20)
-    $lv3  = NuevaLista 'lvMes' 331 270 @(@("Mes", 90), @("Carpeta", 420), @("Tamano", 140), @("Cambio vs mes anterior", 180)) 'Top,Bottom,Left,Right'
-    $b1 = New-Object Windows.Forms.Button; $b1.Text = "Medir ahora";    $b1.SetBounds(12, 615, 130, 30);  $b1.Anchor = 'Bottom,Left'
-    $b2 = New-Object Windows.Forms.Button; $b2.Text = "Abrir en Excel"; $b2.SetBounds(150, 615, 130, 30); $b2.Anchor = 'Bottom,Left'
-    $b3 = New-Object Windows.Forms.Button; $b3.Text = "Cerrar";         $b3.SetBounds(742, 615, 130, 30); $b3.Anchor = 'Bottom,Right'
-    $b1.add_Click({ LanzarMedicion; RellenarTamanos })
-    $b2.add_Click({ if (Test-Path $Historial) { Start-Process $Historial } })
-    $b3.add_Click({ $script:formTam.Hide() })
-    $f.add_FormClosing({ param($s, $e) if ($e.CloseReason -eq 'UserClosing') { $e.Cancel = $true; $s.Hide() } })
-    $f.Controls.AddRange(@($lbl, $lv1, $l2, $lv2, $l3, $lv3, $b1, $b2, $b3))
-    $script:formTam = $f
+    if ($script:formTam -and $script:formTam.IsVisible) { RellenarTamanos; [void]$script:formTam.Activate(); return }
+    $w = NuevaVentana $XamlTamanos
+    $script:formTam = $w
+    $w.FindName('BtnMedir').add_Click({ LanzarMedicion; RellenarTamanos })
+    $w.FindName('BtnExcel').add_Click({ if (Test-Path $Historial) { Start-Process $Historial } })
+    $w.FindName('BtnCerrar').add_Click({ $script:formTam.Close() })
+    $w.add_Closed({ $script:formTam = $null })
     RellenarTamanos
-    $f.Show(); $f.Activate()
-}
-$miTam.add_Click({ MostrarTamanos })
+    MostrarSinBloquear $w
+}$miTam.add_Click({ MostrarTamanos })
 
 # ---------- Plan de copias ----------
 $XamlPlan = @"
@@ -459,7 +504,7 @@ function MostrarPlan {
         [pscustomobject]@{ Id = $d.Id; Detalle = "$(if ($c) { "conectado en $($c.Letra)" } else { 'no conectado' })  $([char]0x00B7)  $ult" }
     }
     $unidades = @(UnidadesActuales); $tam = TamanosDe $unidades
-    $np = @(foreach ($n in @(LeerNubes | Where-Object { NubeDisponible $_ })) { $n | Add-Member -NotePropertyName Activa -NotePropertyValue (NubeActiva $n.Proveedor) -Force; [pscustomobject]@{ Nube = $n; P = (UnidadesParaNube $n $unidades $tam) } })
+    $np = @(foreach ($n in @(LeerNubes | Where-Object { NubeDisponible $_ })) { $n | Add-Member -NotePropertyName Activa -NotePropertyValue $(if ($n.Tipo -eq 'rclone') { $true } else { NubeActiva $n.Proveedor }) -Force; [pscustomobject]@{ Nube = $n; P = (UnidadesParaNube $n $unidades $tam) } })
     PintarPlan $w.FindName('ListaPlan') (PlanDeCopias $discos $rep $tam) 0 $info $np
     $w.Cursor = $null
     $script:discosCache = @(LeerDiscos)

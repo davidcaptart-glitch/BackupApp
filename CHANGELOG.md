@@ -1,5 +1,11 @@
 # Cambios
 
+## 0.4.0
+- Nube directa: conecta tu cuenta de Google Drive, Dropbox, OneDrive, pCloud, Box o Backblaze B2 sin instalar su programa ni ocupar espacio en el PC, y con cifrado opcional (solo tú, con tu contraseña, puedes ver los archivos). Usa rclone, que se descarga la primera vez comprobando que es el original.
+- La copia muestra su progreso y se puede detener: lo copiado se conserva y la próxima vez sigue donde se quedó.
+- Nuevo diseño para la ventana de tamaños, con gráfico de la evolución mes a mes, y para todos los avisos de la copia.
+- Al liberar espacio del PC tras la copia, eliges las carpetas en una lista clara con casillas.
+
 ## 0.3.0
 - Copia extra en la nube: BackupApp encuentra OneDrive, Google Drive, Dropbox, iCloud, MEGA, pCloud, Proton Drive, Box, Sync.com y Nextcloud, y guarda en su carpeta lo imprescindible que quepa en tu espacio. Se hace sola cada semana.
 - También puedes elegir cualquier otra carpeta sincronizada o un NAS.
