@@ -1,13 +1,17 @@
 ﻿# ============================================================
-#  Publica una version nueva en GitHub Releases
+#  Publica una version nueva
 #  1. Cambia VERSION y anade una seccion "## X.Y.Z" al principio de CHANGELOG.md (son las novedades que vera el usuario).
-#  2. Ejecuta:  powershell -NoProfile -ExecutionPolicy Bypass -File herramientas\publicar.ps1
-#     Con -SoloPreparar crea el instalador, el .sha256 y las notas en dist\ sin publicar nada.
-#  Necesita Inno Setup 6 y gh (GitHub CLI) con la sesion iniciada.
-#  Firma (opcional): si existe la variable BACKUPAPP_CERTIFICADO con la huella (thumbprint) de un certificado de firma
-#  de codigo instalado en Cert:\CurrentUser\My, se firman BackupApp.exe, los .ps1 y el instalador. Sin ella se publica sin firmar.
+#  2. Haz commit y ejecuta:  powershell -NoProfile -ExecutionPolicy Bypass -File herramientas\publicar.ps1
+#     Sube la etiqueta vX.Y.Z y GitHub Actions (.github\workflows\publicar.yml) compila el instalador a partir del
+#     codigo, lo firma con SignPath si esta configurado y crea la release. Asi la compilacion es verificable.
+#  Otras formas:
+#     -Local         compila y publica desde este PC (sin compilacion verificable; necesita Inno Setup 6 y gh).
+#     -SoloPreparar  crea el instalador y las notas en dist\ sin publicar nada (lo usa GitHub Actions).
+#     -SinCompilar   con -SoloPreparar: usa el programa que ya hay en dist\BackupApp (por ejemplo, recien firmado).
+#  Firma local (opcional, con -Local o -SoloPreparar): si existe BACKUPAPP_CERTIFICADO con la huella de un certificado
+#  de firma de codigo en Cert:\CurrentUser\My, se firman BackupApp.exe, los .ps1 y el instalador.
 # ============================================================
-param([switch]$SoloPreparar)
+param([switch]$SoloPreparar, [switch]$SinCompilar, [switch]$Local)
 $ErrorActionPreference = 'Stop'
 $raiz = Split-Path $PSScriptRoot -Parent
 $repo = "davidcaptart-glitch/BackupApp"
@@ -23,7 +27,16 @@ foreach ($l in $lineas) {
 $notas = ($notas -join "`n").Trim()
 if (-not $notas) { throw "Falta la seccion '## $v' en CHANGELOG.md (son las novedades que vera el usuario)." }
 
-# Firma de codigo (si hay certificado)
+# Lo normal: publicar desde GitHub Actions
+if (-not $SoloPreparar -and -not $Local) {
+    if (git -C $raiz status --porcelain) { throw "Hay cambios sin guardar en git. Haz commit antes de publicar." }
+    git -C $raiz tag -a "v$v" -m "BackupApp $v"
+    git -C $raiz push origin HEAD "v$v"
+    Write-Host "Etiqueta v$v subida. GitHub compila y publica la version: https://github.com/$repo/actions"
+    return
+}
+
+# Firma de codigo local (si hay certificado)
 $cert = $null
 if ($env:BACKUPAPP_CERTIFICADO) {
     $cert = Get-Item "Cert:\CurrentUser\My\$($env:BACKUPAPP_CERTIFICADO)" -ErrorAction SilentlyContinue
@@ -40,7 +53,7 @@ function Firmar($rutas) {
 }
 
 # Programa e instalador
-& (Join-Path $PSScriptRoot "compilar.ps1")
+if (-not $SinCompilar) { & (Join-Path $PSScriptRoot "compilar.ps1") }
 Firmar @(Get-ChildItem (Join-Path $raiz "dist\BackupApp") -Include *.exe, *.ps1 -Recurse | ForEach-Object { $_.FullName })
 $iscc = @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe", "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $iscc) { throw "No se encuentra Inno Setup 6 (ISCC.exe)." }
@@ -55,7 +68,7 @@ $ficheroNotas = Join-Path $raiz "dist\notas-$v.md"
 Write-Host "Preparado: $setup`nSHA-256:   $hash"
 if ($SoloPreparar) { return }
 
-# Publicar: el codigo tiene que estar en un commit y subido; la etiqueta vX marca esa version
+# -Local: publicar desde este PC
 if (git -C $raiz status --porcelain) { throw "Hay cambios sin guardar en git. Haz commit antes de publicar." }
 git -C $raiz tag -a "v$v" -m "BackupApp $v"
 git -C $raiz push origin HEAD "v$v"

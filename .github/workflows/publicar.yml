@@ -1,0 +1,117 @@
+# Compila y publica BackupApp en GitHub a partir del codigo (compilacion verificable: requisito de SignPath).
+# - Al subir una etiqueta vX.Y.Z (herramientas\publicar.ps1 lo hace): compila, firma si SignPath esta configurado y crea la release.
+# - A mano (Actions > Publicar version > Run workflow): solo compila y deja el instalador como artefacto, salvo que marques "publicar".
+# Firma: hace falta el secreto SIGNPATH_API_TOKEN y la variable SIGNPATH_ORGANIZATION_ID. En SignPath, el proyecto
+# "BackupApp" con la politica "release-signing" y dos configuraciones de artefacto: "programa" y "instalador".
+name: Publicar version
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publicar:
+        description: 'Crear tambien la release en GitHub'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publicar:
+    runs-on: windows-latest
+    env:
+      FIRMAR: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Comprobar que la etiqueta coincide con VERSION
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $v = (Get-Content VERSION -TotalCount 1).Trim()
+          if ("v$v" -ne "${{ github.ref_name }}") { throw "La etiqueta ${{ github.ref_name }} no coincide con VERSION ($v)" }
+
+      - name: Instalar Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Compilar BackupApp.exe
+        shell: powershell
+        run: .\herramientas\compilar.ps1
+
+      # 1) Firmar el programa (BackupApp.exe y los scripts) antes de meterlo en el instalador
+      - name: Subir el programa para firmarlo
+        if: env.FIRMAR == 'true'
+        id: programa
+        uses: actions/upload-artifact@v4
+        with:
+          name: programa
+          path: dist/BackupApp
+      - name: Firmar el programa (SignPath)
+        if: env.FIRMAR == 'true'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: BackupApp
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: programa
+          github-artifact-id: ${{ steps.programa.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: dist/BackupApp
+
+      - name: Crear el instalador
+        shell: powershell
+        run: .\herramientas\publicar.ps1 -SoloPreparar -SinCompilar
+
+      # 2) Firmar el instalador
+      - name: Subir el instalador para firmarlo
+        if: env.FIRMAR == 'true'
+        id: instalador
+        uses: actions/upload-artifact@v4
+        with:
+          name: instalador
+          path: dist/BackupApp-setup-*.exe
+      - name: Firmar el instalador (SignPath)
+        if: env.FIRMAR == 'true'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: BackupApp
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: instalador
+          github-artifact-id: ${{ steps.instalador.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: dist
+
+      # El SHA-256 se calcula al final, sobre el instalador definitivo (firmado o no)
+      - name: Calcular el SHA-256
+        shell: pwsh
+        run: |
+          $v = (Get-Content VERSION -TotalCount 1).Trim()
+          $setup = "dist/BackupApp-setup-$v.exe"
+          $h = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+          [IO.File]::WriteAllText("$setup.sha256", "$h  BackupApp-setup-$v.exe`n")
+          $f = (Get-AuthenticodeSignature $setup).Status
+          "Instalador: $setup | SHA-256: $h | firma: $f" | Tee-Object -Append $env:GITHUB_STEP_SUMMARY
+
+      - name: Guardar el instalador como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: BackupApp-setup
+          path: |
+            dist/BackupApp-setup-*.exe
+            dist/BackupApp-setup-*.exe.sha256
+
+      - name: Crear la release
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.publicar
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = (Get-Content VERSION -TotalCount 1).Trim()
+          $setup = "dist/BackupApp-setup-$v.exe"
+          gh release create "v$v" $setup "$setup.sha256" --title "BackupApp $v" --notes-file "dist/notas-$v.md"

@@ -126,9 +126,10 @@ $miAnadir = MI "Anadir carpeta..."
 $miQuitar = MI "Quitar carpeta"
 $miLogs   = MI "Abrir registros"
 $miActual = MI "Buscar actualizaciones..."
+$miAutoAct = MI "Buscar actualizaciones automáticamente"; $miAutoAct.CheckOnClick = $true
 $miSalir  = MI "Salir"
 [void]$miDiscos.DropDownItems.Add("(cargando)"); [void]$miQuitar.DropDownItems.Add("(cargando)")
-[void]$menu.Items.AddRange(@($miVersion, $miEstado,(SEP), $miCopiar, $miDiscos, $miPlan, $miTam, $miLiberar, (SEP), $miAsis, $miAnadir, $miQuitar, (SEP), $miActual, $miLogs, $miSalir))
+[void]$menu.Items.AddRange(@($miVersion, $miEstado,(SEP), $miCopiar, $miDiscos, $miPlan, $miTam, $miLiberar, (SEP), $miAsis, $miAnadir, $miQuitar, (SEP), $miActual, $miAutoAct, $miLogs, $miSalir))
 $icono.ContextMenuStrip = $menu
 
 $miCopiar.add_Click({ LanzarCopia })
@@ -548,6 +549,8 @@ $timerAct.add_Tick({
     } elseif ($script:busquedaManual) { [void](Dialogo $null "Tienes la última versión" "BackupApp $Version está al día.") }
 })
 $miActual.add_Click({ IniciarBusqueda $true })
+$miAutoAct.Checked = [bool](LeerAjuste 'ActualizarAuto' $true)
+$miAutoAct.add_Click({ GuardarAjuste 'ActualizarAuto' $miAutoAct.Checked })
 
 # ---------- Revision ligera cada 15 s ----------
 function Revisar {
@@ -564,7 +567,7 @@ function Revisar {
     }
 
     # a2) Busqueda diaria de actualizaciones (2 minutos despues de arrancar)
-    if ($script:ticks -ge 8 -and -not (Copiando) -and (LeerAjuste 'UltimaBusqueda') -ne (Get-Date -Format 'yyyy-MM-dd')) {
+    if ($script:ticks -ge 8 -and -not (Copiando) -and [bool](LeerAjuste 'ActualizarAuto' $true) -and (LeerAjuste 'UltimaBusqueda') -ne (Get-Date -Format 'yyyy-MM-dd')) {
         GuardarAjuste 'UltimaBusqueda' (Get-Date -Format 'yyyy-MM-dd'); IniciarBusqueda $false
     }
 

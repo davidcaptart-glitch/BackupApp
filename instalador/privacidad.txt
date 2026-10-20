@@ -1,0 +1,13 @@
+﻿Privacidad
+
+BackupApp funciona en tu PC y no envía ningún dato personal ni estadísticas de uso a nadie.
+
+Solo se conecta a Internet en estos casos:
+
+- Para buscar actualizaciones, una vez al día consulta las versiones publicadas en GitHub (api.github.com) y, si aceptas instalar una, la descarga desde GitHub. No se envía nada sobre ti ni sobre tus archivos. Puedes desactivarlo: clic derecho en el escudo > «Buscar actualizaciones automáticamente».
+
+- Si activas la nube directa, descarga el programa rclone desde rclone.org y sube tu copia a la cuenta que tú conectes (Google Drive, Dropbox, OneDrive, pCloud, Box o Backblaze B2). Tus archivos van solo a esa cuenta y, si eliges cifrarlos, con tu contraseña.
+
+- Si usas una carpeta en la nube (OneDrive, Dropbox...), BackupApp solo copia archivos en ella; quien los sube es el programa de ese servicio.
+
+Todos tus ajustes e historiales se guardan solo en tu PC (%LOCALAPPDATA%\BackupApp).
