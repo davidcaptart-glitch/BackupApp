@@ -1,5 +1,10 @@
 # Cambios
 
+## 0.4.3
+- Medir las carpetas es mucho más rápido: ya no recorre las que no se copian (node_modules, entornos de Python, cachés), que pueden tener cientos de miles de archivos.
+- Se mide primero lo que has marcado, y de una carpeta en una, para no saturar el disco duro.
+- Barra de progreso con porcentaje, gigas contados y la carpeta que se está midiendo en cada momento.
+
 ## 0.4.2
 - Todas las nubes se conectan directamente desde BackupApp, sin instalar nada: Google Drive, Dropbox, OneDrive, pCloud, Box, MEGA, Proton Drive y Backblaze B2.
 - La barra de tareas muestra el icono de BackupApp en sus ventanas (antes salía el de PowerShell).

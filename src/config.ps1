@@ -143,29 +143,55 @@ function UnidadDeRuta($ruta) {
     return $null
 }
 
-# Recorre una carpeta: bytes totales, bytes que se copian (sin $Excluir), archivos y ultima modificacion
-function Analizar($raiz, [switch]$SoloRaiz) {
-    $r = [pscustomobject]@{ Bytes = [int64]0; BytesBackup = [int64]0; Archivos = [int64]0; Ultimo = [datetime]::MinValue }
-    $pila = New-Object 'System.Collections.Generic.Stack[object]'
-    $pila.Push(@((New-Object IO.DirectoryInfo $raiz), $false))
-    while ($pila.Count -gt 0) {
-        $par = $pila.Pop(); $d = $par[0]; $excl = $par[1]
-        try {
-            foreach ($i in $d.EnumerateFileSystemInfos()) {
-                if ($i.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
-                if ($i -is [IO.DirectoryInfo]) {
-                    if (-not $SoloRaiz) { $pila.Push(@($i, ($excl -or ($Excluir -contains $i.Name)))) }
-                } else {
-                    $r.Bytes += $i.Length; $r.Archivos++
-                    if (-not $excl) { $r.BytesBackup += $i.Length }
-                    if ($i.LastWriteTime -gt $r.Ultimo) { $r.Ultimo = $i.LastWriteTime }
-                }
+# Recorre una carpeta: bytes totales, bytes que se copian (sin $Excluir), archivos y ultima modificacion.
+# El recorrido va en C# (mucho mas rapido que un bucle de PowerShell). $Progreso, si se da, recibe los bytes
+# contados hasta el momento unas tres veces por segundo. Con -Rapido no entra en las carpetas excluidas
+# (node_modules...): Bytes = BytesBackup, pero es muchisimo mas rapido. Basta para planificar el reparto.
+if (-not ("BackupApp.Medidor2" -as [type])) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.IO;
+using System.Collections.Generic;
+namespace BackupApp {
+    public static class Medidor2 {
+        public static long[] Medir(string raiz, bool soloRaiz, bool entrarExcluidas, string[] excluir, Action<long> progreso) {
+            HashSet<string> ex = new HashSet<string>(excluir ?? new string[0], StringComparer.OrdinalIgnoreCase);
+            long bytes = 0, backup = 0, archivos = 0, ultimo = DateTime.MinValue.Ticks;
+            Stack<KeyValuePair<DirectoryInfo, bool>> pila = new Stack<KeyValuePair<DirectoryInfo, bool>>();
+            pila.Push(new KeyValuePair<DirectoryInfo, bool>(new DirectoryInfo(raiz), false));
+            DateTime aviso = DateTime.UtcNow;
+            while (pila.Count > 0) {
+                KeyValuePair<DirectoryInfo, bool> e = pila.Pop();
+                try {
+                    foreach (FileSystemInfo i in e.Key.EnumerateFileSystemInfos()) {
+                        if ((i.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+                        DirectoryInfo d = i as DirectoryInfo;
+                        if (d != null) {
+                            if (soloRaiz) continue;
+                            bool excluida = e.Value || ex.Contains(d.Name);
+                            if (excluida && !entrarExcluidas) continue;
+                            pila.Push(new KeyValuePair<DirectoryInfo, bool>(d, excluida)); continue;
+                        }
+                        FileInfo f = (FileInfo)i; long l = f.Length;
+                        bytes += l; archivos++;
+                        if (!e.Value) backup += l;
+                        long w = f.LastWriteTime.Ticks; if (w > ultimo) ultimo = w;
+                    }
+                } catch { }
+                if (progreso != null && (DateTime.UtcNow - aviso).TotalMilliseconds > 300) { aviso = DateTime.UtcNow; progreso(bytes); }
             }
-        } catch {}
+            return new long[] { bytes, backup, archivos, ultimo };
+        }
     }
-    return $r
 }
-
+"@
+}
+function Analizar($raiz, [switch]$SoloRaiz, [switch]$Rapido, $Progreso = $null) {
+    $p = if ($Progreso) { [Action[long]]$Progreso } else { $null }
+    $r = [BackupApp.Medidor2]::Medir($raiz, [bool]$SoloRaiz, -not $Rapido, [string[]]$Excluir, $p)
+    [pscustomobject]@{ Bytes = $r[0]; BytesBackup = $r[1]; Archivos = $r[2]
+                       Ultimo = $(if ($r[3] -gt [datetime]::MinValue.Ticks) { New-Object DateTime ([int64]$r[3]) } else { [datetime]::MinValue }) }
+}
 # ---------- Discos de backup ----------
 function LeerDiscos {
     if (-not (Test-Path $FicheroDiscos)) { return @() }
@@ -336,7 +362,7 @@ function TamanosDe($unidades) {
     $tam = LeerTamUnidades
     foreach ($u in $unidades) {
         if (-not $tam.ContainsKey($u.Clave)) {
-            $a = if ($u.Tipo -eq 'sueltos') { Analizar $u.Carpeta.Origen -SoloRaiz } else { Analizar $u.Clave }
+            $a = if ($u.Tipo -eq 'sueltos') { Analizar $u.Carpeta.Origen -SoloRaiz } else { Analizar $u.Clave -Rapido }
             $tam[$u.Clave] = $a.BytesBackup
         }
     }

@@ -37,13 +37,16 @@ function AgregarCarpetaAsis($ruta, $motivo, $prioridad, $marcada) {
     $c = [pscustomobject]@{ Origen = $ruta; Destino = (DestinoDe $ruta); Prioridad = $prioridad }
     $o = [pscustomobject]@{ Ruta = $ruta; Motivo = $motivo; Carpeta = $c; Unidades = @(UnidadesDe @($c)); Marcada = $marcada; Check = $null; TxtTam = $null }
     $script:asis.Carpetas[$ruta] = $o
-    $falta = @($o.Unidades | Where-Object { -not $script:asis.Tam.ContainsKey($_.Clave) })
-    if ($falta) { MedirEnSegundoPlano $falta }
     [void]$script:asis.Lista.Children.Add((TarjetaCarpeta $o))
+    # Lo marcado se mide antes; lo demas, cuando el disco queda libre
+    EncolarMedicion $o -Primero:$marcada
 }
 function TarjetaCarpeta($o) {
     $chk = New-Object Windows.Controls.CheckBox; $chk.IsChecked = $o.Marcada; $chk.Tag = $o.Ruta
-    $chk.add_Click({ param($s, $e) $script:asis.Carpetas[$s.Tag].Marcada = [bool]$s.IsChecked; RefrescarTamanos })
+    $chk.add_Click({ param($s, $e)
+        $o = $script:asis.Carpetas[$s.Tag]; $o.Marcada = [bool]$s.IsChecked
+        if ($o.Marcada) { EncolarMedicion $o -Primero }   # si estaba esperando, pasa delante
+        RefrescarTamanos })
     $o.Check = $chk
     $det = Texto "$($o.Ruta)   $([char]0x00B7)   $($o.Motivo)" 11.5 'Normal' 'Texto2'; $det.TextWrapping = 'NoWrap'; $det.TextTrimming = 'CharacterEllipsis'; $det.ToolTip = $o.Ruta
     $info = Apilar @((Texto (NombreCorto $o.Ruta) 14 'SemiBold'), $det); $info.Margin = '12,0,12,0'
@@ -80,36 +83,89 @@ function SugerirCarpetas {
             ForEach-Object { AgregarCarpetaAsis $_.FullName "Carpeta del disco $($i.Letra)" (PrioridadSugerida $_.FullName) $false }
     }
 }
-function MedirEnSegundoPlano($unidades) {
-    # Mide las unidades en otro hilo; los resultados llegan por la cola y los recoge el temporizador
-    $trabajo = @($unidades | ForEach-Object { [pscustomobject]@{ Clave = $_.Clave; Tipo = $_.Tipo; Origen = $_.Carpeta.Origen } })
+# ---------- Medicion en segundo plano ----------
+# Un unico medidor recorre las carpetas de una en una (en un disco duro, medir varias a la vez es mas lento porque
+# el cabezal salta de un sitio a otro). Hay dos colas: la prioritaria (lo marcado) y la normal (el resto).
+# No entra en las carpetas que no se copian (node_modules...), que pueden tener cientos de miles de archivos.
+function EncolarMedicion($o, [switch]$Primero) {
+    $a = $script:asis
+    foreach ($u in $o.Unidades) {
+        if ($a.Tam.ContainsKey($u.Clave)) { continue }
+        $antes = $a.Encolado[$u.Clave]
+        if ($antes -eq 'alta' -or ($antes -eq 'baja' -and -not $Primero)) { continue }
+        $a.Encolado[$u.Clave] = $(if ($Primero) { 'alta' } else { 'baja' })
+        $item = [pscustomobject]@{ Clave = $u.Clave; Tipo = $u.Tipo; Origen = $u.Carpeta.Origen }
+        if ($Primero) { $a.Alta.Enqueue($item) } else { $a.Baja.Enqueue($item) }
+    }
+    AsegurarMedidor
+}
+function AsegurarMedidor {
+    $a = $script:asis
+    if ($a.Medidor -and -not $a.Medidor.H.IsCompleted) { return }
+    if ($a.Alta.IsEmpty -and $a.Baja.IsEmpty) { return }
+    if ($a.Medidor) { try { $a.Medidor.PS.Dispose() } catch {} }
     $ps = [powershell]::Create()
     [void]$ps.AddScript({
-        param($config, $trabajo, $cola)
+        param($config, $alta, $baja, $res, $estado)
         . $config
-        foreach ($u in $trabajo) {
-            $a = if ($u.Tipo -eq 'sueltos') { Analizar $u.Origen -SoloRaiz } else { Analizar $u.Clave }
-            $cola.Enqueue([pscustomobject]@{ Clave = $u.Clave; Bytes = $a.Bytes; BytesBackup = $a.BytesBackup })
+        $u = $null
+        while ($alta.TryDequeue([ref]$u) -or $baja.TryDequeue([ref]$u)) {
+            if ($estado.Hechas.ContainsKey($u.Clave)) { continue }   # ya medida (estaba en las dos colas)
+            $estado.Clave = $u.Clave; $estado.Bytes = [int64]0
+            $cb = { param($b) $estado.Bytes = $b }.GetNewClosure()
+            $m = if ($u.Tipo -eq 'sueltos') { Analizar $u.Origen -SoloRaiz } else { Analizar $u.Clave -Rapido -Progreso $cb }
+            $estado.Hechas[$u.Clave] = $true
+            $res.Enqueue([pscustomobject]@{ Clave = $u.Clave; Bytes = $m.Bytes; BytesBackup = $m.BytesBackup })
         }
+        $estado.Clave = $null
     }.ToString())
-    [void]$ps.AddArgument((Join-Path $Codigo "config.ps1")); [void]$ps.AddArgument($trabajo); [void]$ps.AddArgument($script:asis.Cola)
-    $script:asis.Trabajos.Add($ps); [void]$ps.BeginInvoke()
+    foreach ($x in @((Join-Path $Codigo "config.ps1"), $a.Alta, $a.Baja, $a.Cola, $a.Estado)) { [void]$ps.AddArgument($x) }
+    $a.Medidor = @{ PS = $ps; H = $ps.BeginInvoke() }
 }
 function MedidaDe($o) {
-    $b = [int64]0; $n = 0
-    foreach ($u in $o.Unidades) { if ($script:asis.Tam.ContainsKey($u.Clave)) { $b += $script:asis.Tam[$u.Clave]; $n++ } }
-    [pscustomobject]@{ Bytes = $b; Medidas = $n; Total = @($o.Unidades).Count; Completa = ($n -ge @($o.Unidades).Count) }
+    # Lo medido de una carpeta, contando lo que lleva la subcarpeta que se esta midiendo ahora
+    $a = $script:asis; $b = [int64]0; $n = 0; $parcial = [int64]0
+    foreach ($u in $o.Unidades) {
+        if ($a.Tam.ContainsKey($u.Clave)) { $b += $a.Tam[$u.Clave]; $n++ }
+        elseif ($a.Estado.Clave -eq $u.Clave) { $parcial = [int64]$a.Estado.Bytes }
+    }
+    [pscustomobject]@{ Bytes = $b; Parcial = $parcial; Medidas = $n; Total = @($o.Unidades).Count; Completa = ($n -ge @($o.Unidades).Count) }
 }
 function RefrescarTamanos {
     $a = $script:asis; $total = [int64]0; $completo = $true; $n = 0
     foreach ($o in $a.Carpetas.Values) {
         $m = MedidaDe $o
-        $o.TxtTam.Text = if ($m.Completa) { TamTxt $m.Bytes } else { "midiendo $($m.Medidas)/$($m.Total)" }
-        if ($o.Marcada) { $n++; $total += $m.Bytes; if (-not $m.Completa) { $completo = $false } }
+        $o.TxtTam.Text = if ($m.Completa) { TamTxt $m.Bytes }
+                         elseif ($m.Medidas -eq 0 -and $m.Parcial -eq 0) { if ($a.Encolado.Count -and ($o.Unidades | Where-Object { $a.Encolado[$_.Clave] -eq 'alta' })) { "en cola" } else { "pendiente" } }
+                         else { "$(TamTxt ($m.Bytes + $m.Parcial))  $([char]0x00B7)  $($m.Medidas)/$($m.Total)" }
+        if ($o.Marcada) { $n++; $total += $m.Bytes + $m.Parcial; if (-not $m.Completa) { $completo = $false } }
     }
     $a.Win.FindName('TxtTotal').Text = "$n carpetas $([char]0x00B7) $(TamTxt $total)$(if (-not $completo) { ' (midiendo...)' })"
 }
-function MarcadasAsis { @($script:asis.Carpetas.Values | Where-Object { $_.Marcada }) }
+function ProgresoMedicion {
+    # Barra con porcentaje mientras se mide lo marcado (paso 3)
+    $a = $script:asis; $panel = $a.Win.FindName('ListaPlan')
+    $m = @(MarcadasAsis); $med = @($m | ForEach-Object { MedidaDe $_ })
+    $hechas = [int](($med | Measure-Object Medidas -Sum).Sum); $total = [int](($med | Measure-Object Total -Sum).Sum)
+    $bytes = [int64](($med | ForEach-Object { $_.Bytes + $_.Parcial } | Measure-Object -Sum).Sum)
+    if (-not $a.ProgMed -or -not $panel.Children.Contains($a.ProgMed.Tarjeta)) {
+        $panel.Children.Clear()
+        $p = New-Object Windows.Controls.ProgressBar; $p.Height = 8; $p.Minimum = 0; $p.Maximum = 1; $p.BorderThickness = 0; $p.Margin = '0,14,0,8'
+        Recurso $p ([Windows.Controls.ProgressBar]::ForegroundProperty) 'Acento'; Recurso $p ([Windows.Controls.ProgressBar]::BackgroundProperty) 'Barra'
+        $pct = Texto "" 28 'SemiBold' 'Acento'; $det = Texto "" 12 'Normal' 'Texto2'; $ahora = Texto "" 12 'Normal' 'Texto2'
+        $ahora.TextTrimming = 'CharacterEllipsis'; $ahora.TextWrapping = 'NoWrap'
+        $cab = Fila @((Texto "Midiendo tus carpetas..." 15 'SemiBold'), $pct) @('*', 'Auto')
+        $nota = Texto "El plan aparecerá en cuanto termine. Solo se mide lo que has marcado; la próxima vez será instantáneo porque se recuerdan los tamaños." 11.5 'Normal' 'Texto2'; $nota.Margin = '0,10,0,0'
+        $card = Tarjeta (Apilar @($cab, $p, $det, $ahora, $nota))
+        $a.ProgMed = @{ Tarjeta = $card; Barra = $p; Pct = $pct; Det = $det; Ahora = $ahora }
+        [void]$panel.Children.Add($card)
+    }
+    $fr = if ($total) { $hechas / $total } else { 0 }
+    $a.ProgMed.Barra.Value = $fr; $a.ProgMed.Pct.Text = "{0:N0} %" -f (100 * $fr)
+    $a.ProgMed.Det.Text = "$hechas de $total subcarpetas  $([char]0x00B7)  $(TamTxt $bytes) contados"
+    $actual = $a.Estado.Clave
+    $a.ProgMed.Ahora.Text = if ($actual) { "Ahora: $actual" } else { "" }
+}function MarcadasAsis { @($script:asis.Carpetas.Values | Where-Object { $_.Marcada }) }
 function AnadirCarpetaAsis {
     $r = ElegirCarpeta $script:asis.Win "Elige otra carpeta para incluir en el backup"
     if (-not $r) { return }
@@ -570,6 +626,7 @@ function PintarPlan($panel, $plan, $ahorro = 0, $discosInfo = $null, $nubesPlan 
     if ($plan.SinHistorial) { $notas += "Aún no hay historial de tamaños: se reserva un 20 % para el crecimiento de los próximos 2 años." }
     else { $notas += "Tus carpetas crecen unos $(TamTxt $plan.CrecimientoAnual) al año." }
     if ($ahorro -gt 1GB) { $notas += "No se copian carpetas que se regeneran solas ($(($Excluir | Select-Object -First 3) -join ', ')...): ahorras $(TamTxt $ahorro)." }
+    else { $notas += "No se copian las carpetas que se regeneran solas ($(($Excluir | Select-Object -First 3) -join ', ')...)." }
     foreach ($n in $notas) { $x = Texto $n 12 'Normal' 'Texto2'; $x.Margin = '4,4,0,0'; [void]$panel.Children.Add($x) }
 }
 function CalcularPlan {
@@ -578,12 +635,11 @@ function CalcularPlan {
     $med = @($m | ForEach-Object { MedidaDe $_ })
     $hechas = [int](($med | Measure-Object Medidas -Sum).Sum); $total = [int](($med | Measure-Object Total -Sum).Sum)
     if ($hechas -lt $total) {
-        $panel.Children.Clear()
-        $p = New-Object Windows.Controls.ProgressBar; $p.Height = 4; $p.IsIndeterminate = $true; $p.BorderThickness = 0; $p.Margin = '0,12,0,0'
-        Recurso $p ([Windows.Controls.ProgressBar]::ForegroundProperty) 'Acento'; Recurso $p ([Windows.Controls.ProgressBar]::BackgroundProperty) 'Barra'
-        [void]$panel.Children.Add((Tarjeta (Apilar @((Texto "Midiendo tus carpetas..." 15 'SemiBold'), (Texto "$hechas de $total subcarpetas. El plan aparecerá en cuanto termine." 12 'Normal' 'Texto2'), $p))))
+        foreach ($o in $m) { EncolarMedicion $o -Primero }   # por si alguna se marco y aun no estaba en cola
+        ProgresoMedicion
         $a.Plan = $null; $a.Win.FindName('BtnSig').IsEnabled = $false; return
     }
+    $a.ProgMed = $null
     $a.Win.Cursor = [Windows.Input.Cursors]::Wait
     $carps = @($m | ForEach-Object { $_.Carpeta })
     $units = @($m | ForEach-Object { $_.Unidades })
@@ -758,7 +814,9 @@ function Siguiente {
 function MostrarAsistente($alTerminar = $null, [switch]$Modal) {
     if ($script:asis -and $script:asis.Win -and $script:asis.Win.IsVisible) { [void]$script:asis.Win.Activate(); return }
     $a = @{ Carpetas = [ordered]@{}; Tam = (LeerTamUnidades); Total = @{}; Decision = @{}; Paso = 0; Plan = $null; Guardado = $false
-            Cola = (New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'); Trabajos = (New-Object 'System.Collections.Generic.List[object]')
+            Cola = (New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'); Medidor = $null; ProgMed = $null; Encolado = @{}
+            Alta = (New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'); Baja = (New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]')
+            Estado = [hashtable]::Synchronized(@{ Clave = $null; Bytes = [int64]0; Hechas = [hashtable]::Synchronized(@{}) })
             AlTerminar = $alTerminar; FilasDiscos = $null; SinPreguntar = $false; Iniciado = $false
             FilasNubes = $null; DecisionNube = @{}; NubesManuales = (New-Object 'System.Collections.Generic.List[object]'); NubesPlan = @() }
     $script:asis = $a
@@ -785,11 +843,14 @@ function MostrarAsistente($alTerminar = $null, [switch]$Modal) {
     $a.Timer.add_Tick({
         $a = $script:asis; $r = $null; $hubo = $false
         while ($a.Cola.TryDequeue([ref]$r)) { $a.Tam[$r.Clave] = [int64]$r.BytesBackup; $a.Total[$r.Clave] = [int64]$r.Bytes; $hubo = $true }
-        if ($hubo) { RefrescarTamanos; if ($a.Paso -eq 2 -and -not $a.Plan) { CalcularPlan } }
+        AsegurarMedidor
+        $midiendo = [bool]$a.Estado.Clave
+        if ($hubo -or $midiendo) { RefrescarTamanos }
+        if ($a.Paso -eq 2 -and -not $a.Plan) { if ($hubo) { CalcularPlan } elseif ($midiendo) { ProgresoMedicion } }
     })
     $w.add_Closed({
         $a = $script:asis; $a.Timer.Stop()
-        foreach ($ps in $a.Trabajos) { try { $ps.Stop(); $ps.Dispose() } catch {} }
+        if ($a.Medidor) { try { $a.Medidor.PS.Stop(); $a.Medidor.PS.Dispose() } catch {} }
     })
     $w.add_ContentRendered({
         # Se rellena cuando la ventana ya se ve, para que no parezca colgada mientras busca carpetas
