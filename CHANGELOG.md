@@ -1,5 +1,11 @@
 # Cambios
 
+## 0.5.3
+- Liberar espacio: elige en qué discos buscar marcando o desmarcando cada uno. Los discos de copias van desmarcados de entrada y se recuerda tu elección.
+- Liberar espacio enseña lo que encuentra según lo va encontrando (papelera, temporales, cachés y Descargas salen en segundos) con una barra de progreso, y puedes ir marcando mientras sigue buscando.
+- Solo se vacía la papelera de los discos elegidos.
+- La ventana de la copia muestra el porcentaje. Si una carpeta se quedó a medias, cuenta lo que ya estaba copiado.
+
 ## 0.5.2
 - La ventana de la copia tiene «Abrir BackupApp»: mientras copia puedes abrir el plan, liberar espacio o explorar los discos.
 - Nueva ventana principal: al abrir BackupApp ves todas las opciones (hacer copia, editar el plan, liberar espacio, explorar discos, tamaños, asistente y actualizaciones) y debajo el plan de copias.

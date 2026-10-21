@@ -35,17 +35,18 @@ function AbrirProgreso {
     $w = NuevaVentana @"
 <Window $VentanaBase Title="Copia de seguridad" Width="560" SizeToContent="Height" ResizeMode="CanMinimize" WindowStartupLocation="CenterScreen">
   <StackPanel Margin="28,24,28,22">
-    <TextBlock x:Name="Titulo" FontSize="20" FontWeight="SemiBold" Text="Preparando la copia..."/>
+    <DockPanel>
+      <TextBlock x:Name="Porcentaje" DockPanel.Dock="Right" FontSize="20" FontWeight="SemiBold" Foreground="{DynamicResource Acento}" Margin="12,0,0,0"/>
+      <TextBlock x:Name="Titulo" FontSize="20" FontWeight="SemiBold" Text="Preparando la copia..." TextTrimming="CharacterEllipsis"/>
+    </DockPanel>
     <TextBlock x:Name="Detalle" Foreground="{DynamicResource Texto2}" Margin="0,6,0,14" TextTrimming="CharacterEllipsis"/>
     <ProgressBar x:Name="Barra" Height="6" Minimum="0" Maximum="1" BorderThickness="0" Foreground="{DynamicResource Acento}" Background="{DynamicResource Barra}"/>
-    <DockPanel Margin="0,16,0,0">
-      <TextBlock x:Name="Cuenta" Foreground="{DynamicResource Texto2}" VerticalAlignment="Center"/>
-      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-        <Button x:Name="BtnAbrir" Content="Abrir BackupApp" Margin="0,0,8,0"/>
-        <Button x:Name="BtnDetener" Content="Detener"/>
-      </StackPanel>
-    </DockPanel>
-    <TextBlock Margin="0,14,0,0" FontSize="11.5" Foreground="{DynamicResource Texto2}" TextWrapping="Wrap" Text="Puedes seguir usando el PC. Si detienes la copia, lo ya copiado se conserva y la próxima vez seguirá donde se quedó."/>
+    <TextBlock x:Name="Cuenta" Foreground="{DynamicResource Texto2}" Margin="0,10,0,0" TextWrapping="Wrap"/>
+    <TextBlock Margin="0,12,0,0" FontSize="11.5" Foreground="{DynamicResource Texto2}" TextWrapping="Wrap" Text="Puedes seguir usando el PC. Si detienes la copia, lo ya copiado se conserva y la próxima vez seguirá donde se quedó."/>
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+      <Button x:Name="BtnAbrir" Content="Abrir BackupApp" Margin="0,0,8,0"/>
+      <Button x:Name="BtnDetener" Content="Detener"/>
+    </StackPanel>
   </StackPanel>
 </Window>
 "@
@@ -62,7 +63,9 @@ function Progreso($titulo, $detalle, [double]$fraccion, $cuenta = '') {
     if (-not $script:prog) { return }
     $w = $script:prog
     if ($titulo) { $w.FindName('Titulo').Text = $titulo }
-    $w.FindName('Detalle').Text = $detalle; $w.FindName('Barra').Value = [math]::Max(0.0, [math]::Min(1.0, $fraccion)); $w.FindName('Cuenta').Text = $cuenta
+    $f = [math]::Max(0.0, [math]::Min(1.0, $fraccion))
+    $w.FindName('Detalle').Text = $detalle; $w.FindName('Barra').Value = $f; $w.FindName('Cuenta').Text = $cuenta
+    $w.FindName('Porcentaje').Text = if ($f -gt 0) { "{0:N0} %" -f [math]::Floor($f * 100) } else { "" }
     Bombear
 }
 function CerrarProgreso { if ($script:prog) { $script:cerrandoProgreso = $true; $script:prog.Close(); $script:prog = $null } }
@@ -366,6 +369,12 @@ foreach ($disco in $conectados) {
         Progreso $null $script:unidadActual $(if ($script:copia.Total -gt 0) { $script:copia.Hecho / $script:copia.Total } else { ($n - 1) / [math]::Max(1, $unidades.Count) }) (TextoProgresoCopia)
         if ($u.Tipo -eq 'carpeta') {
             $dst = Join-Path $disco.Raiz (DestinoUnidad $u)
+            # Lo que ya esta en el disco cuenta como hecho (robocopy no apunta los archivos que se salta)
+            if (Test-Path -LiteralPath $dst) {
+                Progreso $null "$($script:unidadActual)  $([char]0x00B7)  mirando lo que ya está copiado..." $(if ($script:copia.Total -gt 0) { $script:copia.Hecho / $script:copia.Total } else { 0 }) (TextoProgresoCopia)
+                $script:copia.Actual = [int64][math]::Min([double](Analizar $dst).Bytes, [double]$tam[$u.Clave])
+                $script:copia.Hist.Clear()   # el salto no es velocidad de copia
+            }
             $c = Robo (@($u.Clave, $dst, '/XD') + $Excluir + @('/MIR', '/FFT', '/XJ', '/R:1', '/W:2', (Hilos $u.Clave $disco.Raiz), '/BYTES', '/NP', '/NDL', "/LOG+:$Log"))
             if ($c -ge 8 -and -not $script:detener) { $errores += "$($u.Clave) (código $c)" }
         } else {
