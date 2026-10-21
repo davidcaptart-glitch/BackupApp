@@ -8,6 +8,18 @@ $ErrorActionPreference = 'SilentlyContinue'
 . (Join-Path $PSScriptRoot "config.ps1")
 [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'Idle'
 
+# Una sola medicion a la vez, y ninguna durante una copia (leen los mismos discos y la copia va mas lenta)
+function MutexLibre($nombre) {
+    $m = New-Object System.Threading.Mutex($false, $nombre)
+    try { if ($m.WaitOne(0)) { return $m } } catch [Threading.AbandonedMutexException] { return $m }
+    return $null
+}
+$script:mutexMedir = MutexLibre "BackupAppMedir"
+if (-not $script:mutexMedir) { exit }
+$copia = MutexLibre "BackupAppCopia"
+if (-not $copia) { exit }
+$copia.ReleaseMutex()
+
 $hoy = Get-Date -Format "yyyy-MM-dd"
 $totales = @{}
 $unidadesFilas = @()

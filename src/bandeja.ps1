@@ -64,7 +64,12 @@ function Avisar($titulo, $texto, $accion) {
     $script:accionClic = $accion
     $icono.ShowBalloonTip(15000, $titulo, $texto, [Windows.Forms.ToolTipIcon]::Info)
 }
-function Copiando { $script:proceso -and -not $script:proceso.HasExited }
+function Copiando {
+    if ($script:proceso -and -not $script:proceso.HasExited) { return $true }
+    # Tambien una copia lanzada desde fuera del icono (BackupApp.exe /copiar): la marca su mutex
+    $m = $null; if ([Threading.Mutex]::TryOpenExisting("BackupAppCopia", [ref]$m)) { $m.Dispose(); return $true }
+    return $false
+}
 function LanzarCopia([switch]$SoloNube) {
     if (Copiando) { if (-not $SoloNube) { Avisar "Backup" "Ya hay una copia en marcha." $null }; return }
     $modo = if ($SoloNube) { "-SoloNube" } else { "-DesdeBandeja" }
@@ -489,31 +494,47 @@ function MostrarTamanos {
 
 # ---------- Plan de copias ----------
 $XamlPlan = @"
-<Window $VentanaBase Title="Plan de copias" Width="840" Height="700" MinWidth="640" MinHeight="480" WindowStartupLocation="CenterScreen">
+<Window $VentanaBase Title="BackupApp" Width="880" Height="760" MinWidth="660" MinHeight="520" WindowStartupLocation="CenterScreen">
   <Grid Margin="34,28,34,24">
-    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-    <TextBlock Text="Plan de copias" FontSize="28" FontWeight="SemiBold" FontFamily="Segoe UI Variable Display, Segoe UI"/>
-    <TextBlock x:Name="Desc" Grid.Row="1" Foreground="{DynamicResource Texto2}" Margin="0,6,0,18" TextWrapping="Wrap" Text="Qué se copia en cada disco y qué espera a un disco nuevo."/>
-    <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"><StackPanel x:Name="ListaPlan"/></ScrollViewer>
-    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Left" Margin="0,18,0,0">
-      <Button x:Name="BtnLiberar" Content="Liberar espacio" Margin="0,0,8,0"/>
-      <Button x:Name="BtnExplorar" Content="Explorar discos"/>
-    </StackPanel>
-    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
-      <Button x:Name="BtnAsis" Content="Asistente" Margin="0,0,8,0"/>
-      <Button x:Name="BtnEditar" Content="Editar el plan" Margin="0,0,8,0"/>
-      <Button x:Name="BtnCerrar" Content="Cerrar" Style="{DynamicResource Primario}" MinWidth="110"/>
-    </StackPanel>
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <TextBlock Text="BackupApp" FontSize="28" FontWeight="SemiBold" FontFamily="Segoe UI Variable Display, Segoe UI"/>
+    <TextBlock x:Name="Estado" Grid.Row="1" Foreground="{DynamicResource Texto2}" Margin="0,6,0,16" TextWrapping="Wrap"/>
+    <WrapPanel Grid.Row="2" Margin="0,0,0,4">
+      <Button x:Name="BtnCopiar" Content="Hacer copia ahora" Style="{DynamicResource Primario}" Margin="0,0,8,8" MinWidth="150"/>
+      <Button x:Name="BtnEditar" Content="Editar el plan" Margin="0,0,8,8" MinWidth="150"/>
+      <Button x:Name="BtnLiberar" Content="Liberar espacio" Margin="0,0,8,8" MinWidth="150"/>
+      <Button x:Name="BtnExplorar" Content="Explorar discos" Margin="0,0,8,8" MinWidth="150"/>
+      <Button x:Name="BtnTam" Content="Tamaños" Margin="0,0,8,8" MinWidth="150"/>
+      <Button x:Name="BtnAsis" Content="Asistente" Margin="0,0,8,8" MinWidth="150"/>
+      <Button x:Name="BtnAct" Content="Buscar actualizaciones" Margin="0,0,8,8" MinWidth="150"/>
+    </WrapPanel>
+    <TextBlock Grid.Row="3" Text="Plan de copias" FontSize="18" FontWeight="SemiBold" Margin="0,14,0,10"/>
+    <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"><StackPanel x:Name="ListaPlan"/></ScrollViewer>
+    <DockPanel Grid.Row="5" Margin="0,18,0,0">
+      <TextBlock DockPanel.Dock="Left" VerticalAlignment="Center" FontSize="11.5" Foreground="{DynamicResource Texto2}" TextWrapping="Wrap" MaxWidth="560" Text="Puedes tener abiertas a la vez la copia, Liberar espacio y Explorar discos. Esta ventana también se abre con clic derecho en el escudo, junto al reloj."/>
+      <Button x:Name="BtnCerrar" Content="Cerrar" HorizontalAlignment="Right" MinWidth="110"/>
+    </DockPanel>
   </Grid>
 </Window>
 "@
+function EstadoPrincipal($w) {
+    $w.FindName('Estado').Text = if (Copiando) { "Hay una copia en marcha. Mientras tanto puedes liberar espacio o explorar los discos." } else { (TextoEstado) -replace "`r?`n", "  $([char]0x00B7)  " }
+    $b = $w.FindName('BtnCopiar'); $b.IsEnabled = -not (Copiando); $b.Content = if (Copiando) { "Copiando..." } else { "Hacer copia ahora" }
+}
 function MostrarPlan {
+    # Una sola ventana principal: si ya esta abierta, se trae al frente
+    if ($script:ventanaPrincipal -and $script:ventanaPrincipal.IsVisible) { $script:ventanaPrincipal.Activate(); return }
     $w = NuevaVentana $XamlPlan
+    $script:ventanaPrincipal = $w
     $w.FindName('BtnCerrar').add_Click({ param($s, $e) [Windows.Window]::GetWindow($s).Close() })
+    $w.FindName('BtnCopiar').add_Click({ param($s, $e) LanzarCopia; EstadoPrincipal ([Windows.Window]::GetWindow($s)) })
     $w.FindName('BtnAsis').add_Click({ param($s, $e) [Windows.Window]::GetWindow($s).Close(); AbrirAsistente })
     $w.FindName('BtnEditar').add_Click({ param($s, $e) [Windows.Window]::GetWindow($s).Close(); MostrarEditorPlan 'AsistenteTerminado' })
     $w.FindName('BtnLiberar').add_Click({ MostrarLiberarEspacio })
     $w.FindName('BtnExplorar').add_Click({ MostrarExplorador })
+    $w.FindName('BtnTam').add_Click({ MostrarTamanos })
+    $w.FindName('BtnAct').add_Click({ IniciarBusqueda $true })
+    EstadoPrincipal $w
     $w.Cursor = [Windows.Input.Cursors]::Wait
     MostrarSinBloquear $w
     $discos = @(LeerDiscos)

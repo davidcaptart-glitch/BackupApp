@@ -2,7 +2,10 @@
 
 ## 0.5.2
 - La ventana de la copia tiene «Abrir BackupApp»: mientras copia puedes abrir el plan, liberar espacio o explorar los discos.
-- La ventana del plan tiene «Liberar espacio» y «Explorar discos».
+- Nueva ventana principal: al abrir BackupApp ves todas las opciones (hacer copia, editar el plan, liberar espacio, explorar discos, tamaños, asistente y actualizaciones) y debajo el plan de copias.
+- Puedes hacer varias cosas a la vez: liberar espacio o explorar los discos mientras se copia.
+- Copias mucho más rápidas en discos USB: ya no se comprimen las carpetas del disco de backup (las fotos RAW y los vídeos no se comprimen y la copia iba unas 4 veces más lenta). Lo ya copiado se queda como está.
+- La medición de tamaños ya no se duplica ni se ejecuta durante una copia (leía los mismos discos y la frenaba).
 
 ## 0.5.1
 - En «Editar el plan» cada subcarpeta tiene tres opciones: «Automático», el disco que elijas o «Esperar» (se queda para un disco futuro aunque quepa).

@@ -19,7 +19,13 @@ function GB($b) { if ([math]::Abs([double]$b) -lt 1GB) { "{0:N0} MB" -f ($b / 1M
 function Aviso($titulo, $texto, $botones = @('Aceptar'), $primario = $null) { return (Dialogo $null $titulo $texto $botones $primario) }
 
 New-Item -ItemType Directory -Path $CarpetaLogs -Force | Out-Null
-$Log = Join-Path $CarpetaLogs ("backup_" + (Get-Date -Format "yyyy-MM-dd_HHmm") + ".log")
+# La medicion de tamanos lee los mismos discos: se para mientras se copia (vuelve a medir otro dia).
+# El mutex avisa a medir_tamanos.ps1 de que hay una copia en marcha.
+$script:mutexCopia = New-Object System.Threading.Mutex($false, "BackupAppCopia")
+try { [void]$script:mutexCopia.WaitOne(0) } catch [Threading.AbandonedMutexException] {}
+Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -like '*medir_tamanos.ps1*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+$Log =Join-Path $CarpetaLogs ("backup_" + (Get-Date -Format "yyyy-MM-dd_HHmm") + ".log")
 
 # ---------- Ventana de progreso ----------
 $script:detener = $false
@@ -111,6 +117,24 @@ function EsSSD($ruta) {
     return $script:ssd[$l]
 }
 function Hilos($origen, $destino) { if ((EsSSD $origen) -and (EsSSD $destino)) { '/MT:8' } else { '/MT:2' } }
+
+# Quita la marca de compresion de BACKUP y de todas sus carpetas (no toca los archivos ya copiados),
+# para que lo que se copie a partir de ahora no se comprima. compact acepta varias carpetas por llamada.
+function QuitarCompresion($raiz) {
+    Progreso "Preparando el disco..." "Quitando la compresión de las carpetas para copiar más rápido" 0
+    $dirs = New-Object Collections.Generic.List[string]; $dirs.Add($raiz.TrimEnd('\'))
+    try { foreach ($d in [IO.Directory]::EnumerateDirectories($raiz, '*', [IO.SearchOption]::AllDirectories)) { $dirs.Add($d) } } catch {}
+    $lote = New-Object Collections.Generic.List[string]; $largo = 0; $n = 0
+    foreach ($d in $dirs) {
+        $lote.Add($d); $largo += $d.Length + 3; $n++
+        if ($largo -gt 6000 -or $n -eq $dirs.Count) {
+            & compact.exe /u /i /q @($lote) | Out-Null
+            $lote.Clear(); $largo = 0
+            Progreso "Preparando el disco..." "Quitando la compresión de las carpetas para copiar más rápido" ($n / $dirs.Count)
+        }
+    }
+    Add-Content $Log "Compresion NTFS quitada de $($dirs.Count) carpetas de $raiz"
+}
 
 # robocopy en un proceso aparte, para que la ventana siga respondiendo y se pueda detener
 function Robo([string[]]$argumentos) {
@@ -312,9 +336,9 @@ foreach ($disco in $conectados) {
         $resumen += "$($disco.Nombre): quitadas $($mios.Count) carpetas que ya no van a este disco ($(GB (($mios | ForEach-Object { [int64]$_.Bytes } | Measure-Object -Sum).Sum)))"
     }
 
-    # 3) Compresion (solo NTFS)
-    if ($disco.Formato -eq "NTFS") { compact.exe /c /i /q "$($disco.Raiz)" | Out-Null }
-    else { Add-Content $Log "Formato $($disco.Formato): sin compresion" }
+    # 3) Sin compresion NTFS: fotos y videos no se comprimen y en discos USB la copia iba 4 veces mas lenta.
+    #    Las versiones antiguas comprimian BACKUP: se quita la marca de las carpetas (lo ya copiado se queda igual).
+    if (([IO.File]::GetAttributes($disco.Raiz) -band [IO.FileAttributes]::Compressed)) { QuitarCompresion $disco.Raiz }
 
     # 4) Reparto: asignar carpetas nuevas y quedarnos con las de este disco
     $rep = AsignarNuevas
