@@ -118,25 +118,25 @@ function MedirNubeRclone($n) {
 function SubirUnidadRclone($u, $n, $log) {
     # Igual que robocopy /MIR: deja la carpeta de la nube igual que la del PC
     if ($u.Tipo -eq 'carpeta') {
-        $dst = RutaRemota $n (Join-Path $u.Carpeta.Destino $u.Nombre)
+        $dst = RutaRemota $n (DestinoUnidad $u)
         $a = @('sync', $u.Clave, $dst) + @(ExcluirRclone) + @('--log-file', $log, '--log-level', 'NOTICE', '--transfers', '4')
     } else {
         # Archivos sueltos de la raiz: solo el primer nivel
-        $dst = RutaRemota $n $u.Carpeta.Destino
-        $a = @('sync', $u.Carpeta.Origen, $dst, '--max-depth', '1', '--exclude', '*/**', '--log-file', $log, '--log-level', 'NOTICE')
+        $dst = RutaRemota $n (DestinoUnidad $u)
+        $a = @('sync', $u.Dir, $dst, '--max-depth', '1', '--exclude', '*/**', '--log-file', $log, '--log-level', 'NOTICE')
     }
     return (Rclone $a).Codigo
 }
-function EspejoRclone($n, $validos, $sueltos) {
-    # Quita de la nube las carpetas que ya no tocan (no caben, se borraron o cambio la prioridad)
-    foreach ($c in $Carpetas) {
-        $base = RutaRemota $n $c.Destino
-        $r = Rclone @('lsf', '--dirs-only', $base)
-        if ($r.Codigo -ne 0) { continue }
-        foreach ($d in ($r.Salida -split "`r?`n" | Where-Object { $_ })) {
-            $ruta = "$base/$($d.TrimEnd('/'))"
-            if (-not $validos.ContainsKey($ruta.ToLower())) { [void](Rclone @('purge', $ruta)) }
-        }
-        if (-not $sueltos.ContainsKey($c.Origen.ToLower())) { [void](Rclone @('delete', $base, '--max-depth', '1')) }
+function EspejoRclone($n, $rel, $cj) {
+    # Quita de la nube lo que ya no toca (no cabe, se borro o cambio el plan), conservando las carpetas intermedias
+    $base = RutaRemota $n $rel
+    $r = Rclone @('lsf', '--dirs-only', $base)
+    if ($r.Codigo -ne 0) { return }
+    foreach ($d in ($r.Salida -split "`r?`n" | Where-Object { $_ })) {
+        $sub = Join-Path $rel $d.TrimEnd('/'); $k = $sub.ToLower()
+        if ($cj.Unidades.ContainsKey($k)) { continue }
+        if ($cj.Ancestros.ContainsKey($k)) { EspejoRclone $n $sub $cj; continue }
+        [void](Rclone @('purge', (RutaRemota $n $sub)))
     }
+    if (-not $cj.Sueltos.ContainsKey($rel.ToLower())) { [void](Rclone @('delete', $base, '--max-depth', '1')) }
 }

@@ -173,6 +173,20 @@ function ElegirCarpetasALiberar($candidatas, $disco) {
     return $script:lib.Elegidas
 }
 
+# ---------- Espejo de la copia en una carpeta de la nube ----------
+# Se conservan las unidades elegidas y las carpetas intermedias hasta ellas; lo demas, dentro de BackupApp, se quita.
+function EspejoCarpetaNube($raiz, $rel, $cj) {
+    $abs = Join-Path $raiz $rel
+    if (-not (Test-Path -LiteralPath $abs)) { return }
+    foreach ($d in @(Get-ChildItem -LiteralPath $abs -Directory -Force -ErrorAction SilentlyContinue)) {
+        $r = Join-Path $rel $d.Name; $k = $r.ToLower()
+        if ($cj.Unidades.ContainsKey($k)) { continue }
+        if ($cj.Ancestros.ContainsKey($k)) { EspejoCarpetaNube $raiz $r $cj; continue }
+        Remove-Item -LiteralPath $d.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if (-not $cj.Sueltos.ContainsKey($rel.ToLower())) { Get-ChildItem -LiteralPath $abs -File -Force -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue }
+}
+
 # ---------- Recordar por donde iba una copia interrumpida ----------
 $FicheroCopiaEnCurso = Join-Path $Datos "copia_en_curso.json"
 function LeerCopiaEnCurso($idDisco) {
@@ -304,19 +318,19 @@ foreach ($disco in $conectados) {
         if ($script:detener) { break }
         $n++
         if ($hechas.ContainsKey($u.Clave)) { $script:copia.Hecho += [int64]$tam[$u.Clave]; continue }
-        $script:unidadActual = "$($u.Carpeta.Origen | Split-Path -Leaf)  $([char]0x203A)  $($u.Nombre)  ($n de $($unidades.Count))"
+        $script:unidadActual = "$($u.Carpeta.Origen | Split-Path -Leaf)  $([char]0x203A)  $(if ($u.Rel) { $u.Rel } else { $u.Nombre })  ($n de $($unidades.Count))"
         Progreso $null $script:unidadActual $(if ($script:copia.Total -gt 0) { $script:copia.Hecho / $script:copia.Total } else { ($n - 1) / [math]::Max(1, $unidades.Count) }) (TextoProgresoCopia)
         if ($u.Tipo -eq 'carpeta') {
-            $dst = Join-Path $disco.Raiz (Join-Path $u.Carpeta.Destino $u.Nombre)
+            $dst = Join-Path $disco.Raiz (DestinoUnidad $u)
             $c = Robo (@($u.Clave, $dst, '/XD') + $Excluir + @('/MIR', '/FFT', '/XJ', '/R:1', '/W:2', (Hilos $u.Clave $disco.Raiz), '/BYTES', '/NP', '/NDL', "/LOG+:$Log"))
             if ($c -ge 8 -and -not $script:detener) { $errores += "$($u.Clave) (código $c)" }
         } else {
             # Archivos sueltos de la raiz: copiar solo los de primer nivel y borrar los que ya no existen
-            $dst = Join-Path $disco.Raiz $u.Carpeta.Destino
-            $c = Robo @($u.Carpeta.Origen, $dst, '/FFT', '/R:1', '/W:2', '/BYTES', '/NP', '/NDL', "/LOG+:$Log")
-            if ($c -ge 8 -and -not $script:detener) { $errores += "$($u.Carpeta.Origen)\* (código $c)" }
+            $dst = Join-Path $disco.Raiz (DestinoUnidad $u)
+            $c = Robo @($u.Dir, $dst, '/FFT', '/R:1', '/W:2', '/BYTES', '/NP', '/NDL', "/LOG+:$Log")
+            if ($c -ge 8 -and -not $script:detener) { $errores += "$($u.Clave) (código $c)" }
             Get-ChildItem -LiteralPath $dst -File -Force -ErrorAction SilentlyContinue |
-                Where-Object { -not (Test-Path -LiteralPath (Join-Path $u.Carpeta.Origen $_.Name)) } |
+                Where-Object { -not (Test-Path -LiteralPath (Join-Path $u.Dir $_.Name)) } |
                 Remove-Item -Force -ErrorAction SilentlyContinue
         }
         if ($script:detener) { break }   # a medias: no cuenta como hecha
@@ -335,7 +349,9 @@ foreach ($disco in $conectados) {
         if ($rep[$k] -ne $disco.Id -or $actuales.ContainsKey($k) -or $k.EndsWith('\*')) { continue }
         $c = $Carpetas | Where-Object { DentroDe $k $_.Origen } | Select-Object -First 1
         if (-not $c -or -not (Test-Path -LiteralPath $c.Origen)) { continue }   # si el disco de origen no esta, no tocar nada
-        $dst = Join-Path $disco.Raiz (Join-Path $c.Destino (Split-Path $k -Leaf))
+        # Sigue en el PC pero ya no es una unidad (la quitaste del plan o la abriste para elegir dentro): su copia se conserva
+        if (Test-Path -LiteralPath $k) { [void]$rep.Remove($k); continue }
+        $dst = Join-Path $disco.Raiz (Join-Path $c.Destino (RelDe $c $k))
         if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Recurse -Force -ErrorAction SilentlyContinue }
         $rep.Remove($k)
     }
@@ -366,8 +382,8 @@ foreach ($disco in $conectados) {
         if ($a.Archivos -gt 0 -and $a.Ultimo -lt $limite -and $a.Bytes -ge ($TamMinimoMB * 1MB)) {
             $candidatas += [pscustomobject]@{
                 Carpeta = $u.Nombre; Ultimo = $a.Ultimo; Bytes = $a.Bytes; Ruta = $u.Clave
-                Backup  = Join-Path $disco.Raiz (Join-Path $u.Carpeta.Destino $u.Nombre)
-                Archivo = Join-Path $disco.Raiz (Join-Path "_ARCHIVO" (Join-Path $u.Carpeta.Destino $u.Nombre))
+                Backup  = Join-Path $disco.Raiz (DestinoUnidad $u)
+                Archivo = Join-Path $disco.Raiz (Join-Path "_ARCHIVO" (DestinoUnidad $u))
             }
         }
     }
@@ -423,39 +439,31 @@ foreach ($n in $nubes) {
     MedirNube $n
     $unidades = @(UnidadesActuales)
     $plan = UnidadesParaNube $n $unidades (TamanosDe $unidades)
-    $errores = @(); $validos = @{}; $sueltos = @{}; $k = 0; $sel = @($plan.Seleccion)
+    $errores = @(); $k = 0; $sel = @($plan.Seleccion); $cj = ConjuntosEspejo $sel
     foreach ($u in $sel) {
         if ($script:detener) { break }
-        $k++; Progreso $null "$($u.Carpeta.Origen | Split-Path -Leaf)  $([char]0x203A)  $($u.Nombre)" (($k - 1) / [math]::Max(1, $sel.Count)) "$k de $($sel.Count) carpetas"
+        $k++; Progreso $null "$($u.Carpeta.Origen | Split-Path -Leaf)  $([char]0x203A)  $(if ($u.Rel) { $u.Rel } else { $u.Nombre })" (($k - 1) / [math]::Max(1, $sel.Count)) "$k de $($sel.Count) carpetas"
         if ($directa) {
             # Nube directa: rclone sube (y cifra, si se eligio) sin pasar por ninguna carpeta del PC
-            if ($u.Tipo -eq 'carpeta') { $validos[(RutaRemota $n (Join-Path $u.Carpeta.Destino $u.Nombre)).ToLower()] = $true } else { $sueltos[$u.Carpeta.Origen.ToLower()] = $true }
             $c = SubirUnidadRclone $u $n $Log
             if ($c -ne 0 -and -not $script:detener) { $errores += "$($u.Clave) (rclone, código $c)" }
             continue
         }
         if ($u.Tipo -eq 'carpeta') {
-            $dst = Join-Path $ruta (Join-Path $u.Carpeta.Destino $u.Nombre); $validos[$dst.ToLower()] = $true
+            $dst = Join-Path $ruta (DestinoUnidad $u)
             $c = Robo (@($u.Clave, $dst, '/XD') + $Excluir + @('/MIR', '/FFT', '/XJ', '/R:1', '/W:2', '/MT:4', '/NP', '/NDL', "/LOG+:$Log"))
             if ($c -ge 8 -and -not $script:detener) { $errores += "$($u.Clave) (código $c)" }
         } else {
-            $dst = Join-Path $ruta $u.Carpeta.Destino; $validos["$($dst.ToLower())|sueltos"] = $true
-            $c = Robo @($u.Carpeta.Origen, $dst, '/FFT', '/R:1', '/W:2', '/NP', '/NDL', "/LOG+:$Log")
-            if ($c -ge 8 -and -not $script:detener) { $errores += "$($u.Carpeta.Origen)\* (código $c)" }
+            $dst = Join-Path $ruta (DestinoUnidad $u)
+            $c = Robo @($u.Dir, $dst, '/FFT', '/R:1', '/W:2', '/NP', '/NDL', "/LOG+:$Log")
+            if ($c -ge 8 -and -not $script:detener) { $errores += "$($u.Clave) (código $c)" }
             Get-ChildItem -LiteralPath $dst -File -Force -ErrorAction SilentlyContinue |
-                Where-Object { -not (Test-Path -LiteralPath (Join-Path $u.Carpeta.Origen $_.Name)) } | Remove-Item -Force -ErrorAction SilentlyContinue
+                Where-Object { -not (Test-Path -LiteralPath (Join-Path $u.Dir $_.Name)) } | Remove-Item -Force -ErrorAction SilentlyContinue
         }
     }
     if ($script:detener) { $resumen += "Nube «$($n.Nombre)»: copia detenida. Lo copiado se conserva."; break }
     # Espejo, solo dentro de BackupApp: se quita lo que ya no toca subir (ya no cabe, se borro o cambio de prioridad)
-    if ($directa) { EspejoRclone $n $validos $sueltos }
-    else { foreach ($c in $Carpetas) {
-        $base = Join-Path $ruta $c.Destino
-        if (-not (Test-Path -LiteralPath $base)) { continue }
-        Get-ChildItem -LiteralPath $base -Directory -Force -ErrorAction SilentlyContinue | Where-Object { -not $validos.ContainsKey($_.FullName.ToLower()) } |
-            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-        if (-not $validos.ContainsKey("$($base.ToLower())|sueltos")) { Get-ChildItem -LiteralPath $base -File -Force -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue }
-    } }
+    foreach ($c in $Carpetas) { if ($directa) { EspejoRclone $n $c.Destino $cj } else { EspejoCarpetaNube $ruta $c.Destino $cj } }
     $lista = @(LeerNubes)
     foreach ($x in $lista) { if ($x.Id -eq $n.Id) { $x.UltimaCopia = (Get-Date -Format "yyyy-MM-dd HH:mm"); $x.Ajeno = $n.Ajeno; $x.Capacidad = $n.Capacidad } }
     GuardarNubes $lista

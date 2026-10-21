@@ -25,6 +25,7 @@ Add-Type -AssemblyName System.Windows.Forms, System.Drawing, Microsoft.VisualBas
 . (Join-Path $PSScriptRoot "actualizar.ps1")
 . (Join-Path $PSScriptRoot "optimizar.ps1")
 . (Join-Path $PSScriptRoot "explorador.ps1")
+. (Join-Path $PSScriptRoot "editar_plan.ps1")
 [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'Idle'
 
 $ScriptBackup = Join-Path $PSScriptRoot "backup_mensual.ps1"
@@ -129,6 +130,7 @@ $miCopiar = MI "Hacer copia ahora"
 $miDiscos = MI "Discos de backup"
 $miTam    = MI "Tamano de las carpetas..."
 $miPlan   = MI "Plan de copias..."
+$miEditar = MI "Editar el plan de copias..."
 $miAsis   = MI "Asistente de configuracion..."
 $miLiberar = MI "Liberar espacio..."
 $miExplorar = MI "Explorar discos..."
@@ -139,7 +141,7 @@ $miActual = MI "Buscar actualizaciones..."
 $miAutoAct = MI "Buscar actualizaciones automáticamente"; $miAutoAct.CheckOnClick = $true
 $miSalir  = MI "Salir"
 [void]$miDiscos.DropDownItems.Add("(cargando)"); [void]$miQuitar.DropDownItems.Add("(cargando)")
-[void]$menu.Items.AddRange(@($miVersion, $miEstado,(SEP), $miCopiar, $miDiscos, $miPlan, $miTam, $miLiberar, $miExplorar, (SEP), $miAsis, $miAnadir, $miQuitar, (SEP), $miActual, $miAutoAct, $miLogs, $miSalir))
+[void]$menu.Items.AddRange(@($miVersion, $miEstado,(SEP), $miCopiar, $miDiscos, $miPlan, $miEditar, $miTam, $miLiberar, $miExplorar, (SEP), $miAsis, $miAnadir, $miQuitar, (SEP), $miActual, $miAutoAct, $miLogs, $miSalir))
 $icono.ContextMenuStrip = $menu
 
 $miCopiar.add_Click({ LanzarCopia })
@@ -494,7 +496,8 @@ $XamlPlan = @"
     <TextBlock x:Name="Desc" Grid.Row="1" Foreground="{DynamicResource Texto2}" Margin="0,6,0,18" TextWrapping="Wrap" Text="Qué se copia en cada disco y qué espera a un disco nuevo."/>
     <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"><StackPanel x:Name="ListaPlan"/></ScrollViewer>
     <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
-      <Button x:Name="BtnAsis" Content="Cambiar el plan" Margin="0,0,8,0"/>
+      <Button x:Name="BtnAsis" Content="Asistente" Margin="0,0,8,0"/>
+      <Button x:Name="BtnEditar" Content="Editar el plan" Margin="0,0,8,0"/>
       <Button x:Name="BtnCerrar" Content="Cerrar" Style="{DynamicResource Primario}" MinWidth="110"/>
     </StackPanel>
   </Grid>
@@ -504,6 +507,7 @@ function MostrarPlan {
     $w = NuevaVentana $XamlPlan
     $w.FindName('BtnCerrar').add_Click({ param($s, $e) [Windows.Window]::GetWindow($s).Close() })
     $w.FindName('BtnAsis').add_Click({ param($s, $e) [Windows.Window]::GetWindow($s).Close(); AbrirAsistente })
+    $w.FindName('BtnEditar').add_Click({ param($s, $e) [Windows.Window]::GetWindow($s).Close(); MostrarEditorPlan 'AsistenteTerminado' })
     $w.Cursor = [Windows.Input.Cursors]::Wait
     MostrarSinBloquear $w
     $discos = @(LeerDiscos)
@@ -521,6 +525,7 @@ function MostrarPlan {
     $script:discosCache = @(LeerDiscos)
 }
 $miPlan.add_Click({ MostrarPlan })
+$miEditar.add_Click({ MostrarEditorPlan 'AsistenteTerminado' })
 
 # ---------- Asistente ----------
 function AbrirAsistente { MostrarAsistente 'AsistenteTerminado' }

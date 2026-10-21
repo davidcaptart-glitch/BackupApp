@@ -12,7 +12,7 @@ $hoy = Get-Date -Format "yyyy-MM-dd"
 $totales = @{}
 $unidadesFilas = @()
 foreach ($u in (UnidadesActuales)) {
-    $a = if ($u.Tipo -eq 'sueltos') { Analizar $u.Carpeta.Origen -SoloRaiz } else { Analizar $u.Clave }
+    $a = if ($u.Tipo -eq 'sueltos') { Analizar $u.Dir -SoloRaiz } else { Analizar $u.Clave }
     $unidadesFilas += [pscustomobject]@{ Unidad = $u.Clave; Bytes = $a.BytesBackup; Fecha = $hoy }
     $o = $u.Carpeta.Origen
     if (-not $totales.ContainsKey($o)) { $totales[$o] = @([int64]0, [int64]0) }

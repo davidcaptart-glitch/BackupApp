@@ -102,7 +102,7 @@ function BuscarOportunidades {
         if ($a.Ultimo -ge $copia) { continue }   # ha cambiado despues de la copia
         $o.Add([pscustomobject]@{ Id = "copiado:$($u.Clave)"; Titulo = $u.Nombre; Rutas = @($u.Clave); Bytes = [int64]$a.Bytes; Seguro = $false; Tipo = 'copiado'
             Detalle = "$(Split-Path $u.Clave -Parent)   $([char]0x00B7)   copiada en «$($d.Nombre)» el $($copia.ToString('dd/MM/yyyy'))   $([char]0x00B7)   sin cambios desde el $($a.Ultimo.ToString('dd/MM/yyyy'))"
-            Disco = $d.Id; DiscoNombre = $d.Nombre; Destino = $u.Carpeta.Destino; Nombre = $u.Nombre })
+            Disco = $d.Id; DiscoNombre = $d.Nombre; Destino = (DestinoUnidad $u) })
     }
     # Primero lo que se regenera o sobra; al final, lo que ya esta copiado
     return @($o.ToArray() | Where-Object { $_.Bytes -gt 0 } | Sort-Object { $_.Tipo -eq 'copiado' }, { -$_.Bytes })
@@ -242,14 +242,14 @@ function BorrarYaCopiada($it) {
     # y solo entonces borra la carpeta del PC. Devuelve $true si se ha hecho.
     $c = DiscosConectados | Where-Object { $_.Id -eq $it.Disco } | Select-Object -First 1
     if (-not $c) { return $false }
-    $src = $it.Rutas[0]; $dst = Join-Path $c.Raiz (Join-Path $it.Destino $it.Nombre)
+    $src = $it.Rutas[0]; $dst = Join-Path $c.Raiz $it.Destino
     if (-not (Test-Path -LiteralPath $dst)) { return $false }
     $args2 = @("`"$src`"", "`"$dst`"", '/XD') + $Excluir + @('/MIR', '/L', '/FFT', '/XJ', '/R:0', '/W:0', '/NJH', '/NJS', '/NFL', '/NDL')
     $pi = New-Object Diagnostics.ProcessStartInfo 'robocopy.exe', ($args2 -join ' '); $pi.UseShellExecute = $false; $pi.CreateNoWindow = $true
     $p = [Diagnostics.Process]::Start($pi); while (-not $p.WaitForExit(150)) { [Windows.Forms.Application]::DoEvents() }
     if ($p.ExitCode -ne 0) { return $false }   # la copia no es identica: no se toca nada
     try {
-        $arch = Join-Path $c.Raiz (Join-Path "_ARCHIVO" (Join-Path $it.Destino $it.Nombre))
+        $arch = Join-Path $c.Raiz (Join-Path "_ARCHIVO" $it.Destino)
         New-Item -ItemType Directory -Path (Split-Path $arch -Parent) -Force | Out-Null
         if (Test-Path -LiteralPath $arch) { $arch += "_" + (Get-Date -Format "yyyyMMdd") }
         Move-Item -LiteralPath $dst -Destination $arch -ErrorAction Stop

@@ -1,5 +1,11 @@
 # Cambios
 
+## 0.5.0
+- Nueva ventana «Editar el plan de copias» (menú del escudo y ventana del plan): decides tú exactamente qué se copia y a qué disco.
+- «Elegir dentro»: abre cualquier carpeta para escoger sus subcarpetas una a una, a la profundidad que quieras.
+- Quita del plan las subcarpetas que no quieras copiar; su copia en el disco no se borra.
+- Elige el disco de cada subcarpeta o déjalo en «Automático». Arriba ves al momento cuánto ocupará cada disco y si se pasa.
+
 ## 0.4.9
 - Si detienes una copia (o se apaga el PC), al volver a lanzarla continúa donde se quedó: se salta las carpetas que ya terminó.
 - Nueva ventana «Explorar discos» (menú del escudo y «Liberar espacio»): recorre cualquier disco viendo qué ocupa cada carpeta y elige tú qué hacer, sin depender del plan de copias.

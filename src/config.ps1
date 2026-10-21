@@ -117,32 +117,91 @@ function DentroDe($hija, $padre) {
 }
 
 # ---------- Unidades de reparto ----------
-# Cada subcarpeta directa de una carpeta incluida (ej. FOTOS\Boda X) es una "unidad"
-# que vive entera en un disco. Los archivos sueltos de la raiz son otra unidad ("\*").
+# Cada subcarpeta directa de una carpeta incluida (ej. FOTOS\Boda X) es una "unidad" que vive entera en un disco.
+# Los archivos sueltos de una carpeta son otra unidad ("<carpeta>\*").
+# El usuario puede afinar el plan (ventana "Editar el plan"):
+#  - divididas.txt: subcarpetas que se "abren" para elegir dentro; sus subcarpetas pasan a ser unidades (a cualquier profundidad)
+#  - excluidas.txt: unidades que no se copian (su copia en el disco no se borra, solo deja de actualizarse)
+# Cada unidad lleva Rel (su ruta relativa a la carpeta incluida) y Dir (la carpeta real; para los sueltos, la que los contiene).
+$FicheroDivididas = Join-Path $Datos "divididas.txt"
+$FicheroExcluidas = Join-Path $Datos "excluidas.txt"
+function LeerLista($fichero) {
+    $h = @{}
+    if (Test-Path -LiteralPath $fichero) { foreach ($l in [IO.File]::ReadAllLines($fichero)) { if ($l.Trim()) { $h[$l.Trim().TrimEnd('\')] = $true } } }
+    return $h
+}
+function GuardarLista($fichero, $h) { [IO.File]::WriteAllLines($fichero, [string[]]@($h.Keys | Sort-Object)) }
+function RelDe($c, $ruta) {
+    $o = $c.Origen.TrimEnd('\'); $r = $ruta.TrimEnd('\')
+    if ($r.Length -le $o.Length) { return '' }
+    return $r.Substring($o.Length + 1)
+}
+function DestinoUnidad($u) {
+    # Ruta relativa dentro de BACKUP: la de la carpeta incluida mas la de la unidad (los sueltos van a su carpeta)
+    if ($u.Rel) { return (Join-Path $u.Carpeta.Destino $u.Rel) } else { return $u.Carpeta.Destino }
+}
+function ConjuntosEspejo($unidades) {
+    # Para quitar de una copia lo que ya no toca: rutas relativas (dentro de BACKUP) de las unidades elegidas, de las
+    # carpetas cuyos archivos sueltos se copian y de todas las carpetas intermedias que hay que conservar
+    $cj = @{ Unidades = @{}; Sueltos = @{}; Ancestros = @{} }
+    foreach ($u in $unidades) {
+        $r = (DestinoUnidad $u).ToLower()
+        if ($u.Tipo -eq 'carpeta') { $cj.Unidades[$r] = $true } else { $cj.Sueltos[$r] = $true }
+        $partes = $r.Split('\'); $acc = ''
+        for ($i = 0; $i -lt $partes.Count - $(if ($u.Tipo -eq 'carpeta') { 1 } else { 0 }); $i++) { $acc = if ($acc) { "$acc\$($partes[$i])" } else { $partes[$i] }; $cj.Ancestros[$acc] = $true }
+    }
+    return $cj
+}
 function UnidadesActuales { UnidadesDe $Carpetas }
-function UnidadesDe($carpetas) {
+function UnidadesDe($carpetas, $divididas = $null, $excluidas = $null, [switch]$ConExcluidas) {
+    # Con -ConExcluidas tambien devuelve las excluidas (marcadas con Excluida = $true), para la ventana de edicion
+    if ($null -eq $divididas) { $divididas = LeerLista $FicheroDivididas }
+    if ($null -eq $excluidas) { $excluidas = LeerLista $FicheroExcluidas }
     foreach ($c in $carpetas) {
         if (-not (Test-Path -LiteralPath $c.Origen)) { continue }
-        Get-ChildItem -LiteralPath $c.Origen -Directory -Force -ErrorAction SilentlyContinue |
-            Where-Object { ($Excluir -notcontains $_.Name) -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } |
-            ForEach-Object { [pscustomobject]@{ Clave = $_.FullName; Carpeta = $c; Tipo = 'carpeta'; Nombre = $_.Name } }
-        if (Get-ChildItem -LiteralPath $c.Origen -File -Force -ErrorAction SilentlyContinue | Select-Object -First 1) {
-            [pscustomobject]@{ Clave = "$($c.Origen)\*"; Carpeta = $c; Tipo = 'sueltos'; Nombre = '(archivos sueltos)' }
-        }
+        UnidadesDeDir $c $c.Origen.TrimEnd('\') $divididas $excluidas $ConExcluidas
     }
 }
+function UnidadesDeDir($c, $dir, $divididas, $excluidas, $conExcluidas) {
+    foreach ($d in @(Get-ChildItem -LiteralPath $dir -Directory -Force -ErrorAction SilentlyContinue |
+                     Where-Object { ($Excluir -notcontains $_.Name) -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })) {
+        $p = $d.FullName
+        if ($divididas.ContainsKey($p)) { UnidadesDeDir $c $p $divididas $excluidas $conExcluidas; continue }
+        $ex = $excluidas.ContainsKey($p)
+        if ($ex -and -not $conExcluidas) { continue }
+        [pscustomobject]@{ Clave = $p; Carpeta = $c; Tipo = 'carpeta'; Nombre = $d.Name; Rel = (RelDe $c $p); Dir = $p; Excluida = $ex }
+    }
+    if (Get-ChildItem -LiteralPath $dir -File -Force -ErrorAction SilentlyContinue | Select-Object -First 1) {
+        $k = "$dir\*"; $ex = $excluidas.ContainsKey($k)
+        if (-not $ex -or $conExcluidas) { [pscustomobject]@{ Clave = $k; Carpeta = $c; Tipo = 'sueltos'; Nombre = '(archivos sueltos)'; Rel = (RelDe $c $dir); Dir = $dir; Excluida = $ex } }
+    }
+}
+$script:listasPlan = @{ Marca = $null }
+function ListasPlan {
+    # divididas/excluidas en memoria; se releen solo si alguno de los dos archivos ha cambiado
+    $m = "$(if (Test-Path $FicheroDivididas) { (Get-Item $FicheroDivididas).LastWriteTimeUtc.Ticks })|$(if (Test-Path $FicheroExcluidas) { (Get-Item $FicheroExcluidas).LastWriteTimeUtc.Ticks })"
+    if ($script:listasPlan.Marca -ne $m) { $script:listasPlan = @{ Marca = $m; Div = (LeerLista $FicheroDivididas); Exc = (LeerLista $FicheroExcluidas) } }
+    return $script:listasPlan
+}
 function UnidadDeRuta($ruta) {
+    # A que unidad pertenece un archivo o carpeta que ha cambiado ($null si no esta en el plan)
+    $lp = ListasPlan; $divididas = $lp.Div; $excluidas = $lp.Exc
     foreach ($c in $Carpetas) {
-        $o = $c.Origen + '\'
-        if ($ruta.StartsWith($o, [StringComparison]::OrdinalIgnoreCase)) {
-            $seg = $ruta.Substring($o.Length).Split('\')
-            if ($seg.Count -gt 1 -or (Test-Path -LiteralPath $ruta -PathType Container)) { return (Join-Path $c.Origen $seg[0]) }
-            return "$($c.Origen)\*"
+        $o = $c.Origen.TrimEnd('\') + '\'
+        if (-not $ruta.StartsWith($o, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        $seg = $ruta.Substring($o.Length).Split('\'); $dir = $c.Origen.TrimEnd('\')
+        for ($i = 0; $i -lt $seg.Count; $i++) {
+            $p = Join-Path $dir $seg[$i]
+            $ultimo = ($i -eq $seg.Count - 1)
+            if ($ultimo -and -not (Test-Path -LiteralPath $p -PathType Container)) { $u = "$dir\*" }   # archivo suelto
+            elseif ($divididas.ContainsKey($p) -and -not $ultimo) { $dir = $p; continue }
+            else { $u = $p }
+            if ($excluidas.ContainsKey($u)) { return $null }
+            return $u
         }
     }
     return $null
 }
-
 # Recorre una carpeta: bytes totales, bytes que se copian (sin $Excluir), archivos y ultima modificacion.
 # El recorrido va en C# (mucho mas rapido que un bucle de PowerShell). $Contador, si se da (un [long[]] de 1),
 # recibe en [0] los bytes contados hasta el momento: asi otra ventana puede mostrar el progreso sin que el
@@ -362,7 +421,7 @@ function TamanosDe($unidades) {
     $tam = LeerTamUnidades; $nuevos = $false
     foreach ($u in $unidades) {
         if (-not $tam.ContainsKey($u.Clave)) {
-            $a = if ($u.Tipo -eq 'sueltos') { Analizar $u.Carpeta.Origen -SoloRaiz } else { Analizar $u.Clave -Rapido }
+            $a = if ($u.Tipo -eq 'sueltos') { Analizar $u.Dir -SoloRaiz } else { Analizar $u.Clave -Rapido }
             $tam[$u.Clave] = $a.BytesBackup; $nuevos = $true
         }
     }

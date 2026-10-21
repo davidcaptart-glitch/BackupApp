@@ -94,7 +94,7 @@ function EncolarMedicion($o, [switch]$Primero) {
         $antes = $a.Encolado[$u.Clave]
         if ($antes -eq 'alta' -or ($antes -eq 'baja' -and -not $Primero)) { continue }
         $a.Encolado[$u.Clave] = $(if ($Primero) { 'alta' } else { 'baja' })
-        $item = [pscustomobject]@{ Clave = $u.Clave; Tipo = $u.Tipo; Origen = $u.Carpeta.Origen }
+        $item = [pscustomobject]@{ Clave = $u.Clave; Tipo = $u.Tipo; Origen = $u.Dir }
         if ($Primero) { $a.Alta.Enqueue($item) } else { $a.Baja.Enqueue($item) }
     }
     AsegurarMedidor
