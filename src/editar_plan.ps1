@@ -12,7 +12,13 @@ $XamlEditor = @"
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
     <TextBlock Text="Editar el plan de copias" FontSize="28" FontWeight="SemiBold" FontFamily="Segoe UI Variable Display, Segoe UI"/>
     <TextBlock Grid.Row="1" Foreground="{DynamicResource Texto2}" Margin="0,6,0,14" TextWrapping="Wrap" Text="Marca exactamente qué quieres copiar y a qué disco. «Elegir dentro» abre una carpeta para escoger sus subcarpetas una a una. Lo que quites del plan no se borra del disco: solo deja de actualizarse."/>
-    <UniformGrid x:Name="Discos" Grid.Row="2" Rows="1" Margin="0,0,0,12"/>
+    <StackPanel Grid.Row="2" Margin="0,0,0,12">
+      <UniformGrid x:Name="Discos" Rows="1"/>
+      <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+        <TextBlock Text="Mostrar:" VerticalAlignment="Center" Foreground="{DynamicResource Texto2}" Margin="2,0,8,0"/>
+        <WrapPanel x:Name="Filtros"/>
+      </StackPanel>
+    </StackPanel>
     <ScrollViewer x:Name="Scroll" Grid.Row="3" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"><StackPanel x:Name="Lista"/></ScrollViewer>
     <Grid Grid.Row="4" Margin="0,16,0,0">
       <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -32,9 +38,9 @@ function MostrarEditorPlan($alGuardar = $null) {
     $w = NuevaVentana $XamlEditor
     $car = New-Object 'System.Collections.Generic.List[object]'
     foreach ($c in @(LeerCarpetas)) { $car.Add([pscustomobject]@{ Origen = $c.Origen; Destino = $c.Destino; Prioridad = $c.Prioridad }) }
-    $rep = @{}; $r0 = LeerReparto; foreach ($k in $r0.Keys) { if ($r0[$k] -ne $EnEspera) { $rep[$k] = $r0[$k] } }
+    $rep = @{}; $r0 = LeerReparto; foreach ($k in $r0.Keys) { if ($r0[$k] -ne $EnEspera) { $rep[$k] = $r0[$k] } }   # ESPERA (automatico) se recalcula; ESPERA_FIJA se respeta
     $script:ed = @{ Win = $w; Carpetas = $car; Div = (LeerLista $FicheroDivididas); Exc = (LeerLista $FicheroExcluidas); Rep = $rep
-                    Tam = (LeerTamUnidades); Discos = @(LeerDiscos); AlGuardar = $alGuardar; Proy = @{}; Cambios = $false }
+                    Tam = (LeerTamUnidades); Discos = @(LeerDiscos); AlGuardar = $alGuardar; Proy = @{}; Cambios = $false; Filtro = 'todo' }
     $w.FindName('BtnAnadir').add_Click({ AnadirCarpetaEd })
     $w.FindName('BtnCancelar').add_Click({ $script:ed.Win.Close() })
     $w.FindName('BtnGuardar').add_Click({ GuardarEditorPlan })
@@ -74,10 +80,18 @@ function PintarEditor {
         $t.Child.Children[1].Margin = '0,8,0,6'; $t.Margin = '0,0,8,0'
         [void]$dp.Children.Add($t)
     }
-    $espera = [int64](($units | Where-Object { $ed.Proy[$_.Clave] -eq $EnEspera } | ForEach-Object { [int64]$ed.Tam[$_.Clave] } | Measure-Object -Sum).Sum)
-    $t = Tarjeta (Apilar @((Texto "Sin sitio todavía" 14 'SemiBold'), (Texto (TamTxt $espera) 20 'SemiBold' $(if ($espera) { 'Aviso' } else { 'Texto2' })), (Texto "Lo automático que no cabe espera a otro disco" 12 'Normal' 'Texto2')))
+    $espera = [int64](($units | Where-Object { EsperaAlgo $ed.Proy[$_.Clave] } | ForEach-Object { [int64]$ed.Tam[$_.Clave] } | Measure-Object -Sum).Sum)
+    $t = Tarjeta (Apilar @((Texto "Esperando a otro disco" 14 'SemiBold'), (Texto (TamTxt $espera) 20 'SemiBold' $(if ($espera) { 'Aviso' } else { 'Texto2' })), (Texto "Lo que eliges esperar y lo automático que no cabe" 12 'Normal' 'Texto2')))
     [void]$dp.Children.Add($t)
     $dp.Columns = $ed.Discos.Count + 1
+    # Filtro: todo, lo que va a cada disco, lo que espera
+    $fp = $w.FindName('Filtros'); $fp.Children.Clear()
+    foreach ($op in @(, @('todo', 'Todo')) + @($ed.Discos | ForEach-Object { , @($_.Id, "Lo que va a «$($_.Nombre)»") }) + @(, @('espera', 'Lo que espera'))) {
+        $rb = New-Object Windows.Controls.RadioButton; $rb.Style = $script:Estilos['Pastilla']; $rb.Content = $op[1]; $rb.GroupName = 'edfiltro'; $rb.Tag = $op[0]
+        $rb.IsChecked = ($ed.Filtro -eq $op[0])
+        $rb.add_Checked({ param($s, $e) if ($script:ed.Filtro -ne $s.Tag) { $script:ed.Filtro = $s.Tag; PintarEditor } })
+        [void]$fp.Children.Add($rb)
+    }
     # Carpetas
     $l = $w.FindName('Lista'); $l.Children.Clear()
     for ($ci = 0; $ci -lt $ed.Carpetas.Count; $ci++) {
@@ -91,11 +105,19 @@ function PintarEditor {
         }
         $quitar = New-Object Windows.Controls.Button; $quitar.Style = $script:Estilos['Enlace']; $quitar.Content = "Quitar del plan"; $quitar.Tag = $ci; $quitar.Margin = '14,0,0,0'
         $quitar.add_Click({ param($s, $e) QuitarCarpetaEd $s.Tag })
+        # Acciones para todo el contenido de la carpeta
+        $todo = New-Object Windows.Controls.WrapPanel; $todo.Margin = '0,8,0,0'
+        [void]$todo.Children.Add(($(Texto "Todo su contenido:" 12 'Normal' 'Texto2') | ForEach-Object { $_.Margin = '0,0,10,0'; $_ }))
+        foreach ($op in @($ed.Discos | ForEach-Object { , @($_.Id, "a «$($_.Nombre)»") }) + @(, @($EsperaFija, 'a esperar')) + @(, @('', 'automático'))) {
+            $b = New-Object Windows.Controls.Button; $b.Style = $script:Estilos['Enlace']; $b.Content = $op[1]; $b.Tag = "$ci|$($op[0])"; $b.Margin = '0,0,14,0'
+            $b.add_Click({ param($s, $e) $i, $v = $s.Tag.Split('|', 2); TodoCarpetaEd ([int]$i) $v })
+            [void]$todo.Children.Add($b)
+        }
         $cab = Fila @((Icono ([string][char]0xE8B7) 20 'Acento'), (Apilar @((Texto (Split-Path $c.Origen -Leaf) 16 'SemiBold'), (Texto $c.Origen 11.5 'Normal' 'Texto2'))), $pri, $quitar) @('Auto', '*', 'Auto', 'Auto')
         $cab.Children[1].Margin = '12,0,12,0'
         $filas = New-Object Windows.Controls.StackPanel; $filas.Margin = '0,10,0,0'
         if (Test-Path -LiteralPath $c.Origen) { PintarDirEd $c $c.Origen.TrimEnd('\') 0 $filas } else { [void]$filas.Children.Add((Texto "No se encuentra esta carpeta (¿disco desconectado?)." 12 'Normal' 'Aviso')) }
-        [void]$l.Children.Add((Tarjeta (Apilar @($cab, $filas))))
+        [void]$l.Children.Add((Tarjeta (Apilar @($cab, $todo, $filas))))
     }
     if (-not $ed.Carpetas.Count) { [void]$l.Children.Add((Tarjeta (Texto "El plan está vacío. Pulsa «Añadir carpeta»." 13 'Normal' 'Texto2'))) }
     $incl = @($units).Count; $tot = [int64](($units | ForEach-Object { [int64]$ed.Tam[$_.Clave] } | Measure-Object -Sum).Sum)
@@ -136,17 +158,30 @@ function FilaUnidadEd($c, $clave, $nombre, $tipo, $nivel) {
     $disco = $null
     if ($incluida) {
         $fijo = $ed.Rep[$clave]
-        $txt = if ($fijo) { "$([char]0x2192) $(NombreDisco $fijo)" } elseif ($ed.Proy[$clave] -eq $EnEspera) { "Automático (no cabe: espera)" } else { "Automático $([char]0x2192) $(NombreDisco $ed.Proy[$clave])" }
-        $disco = New-Object Windows.Controls.Button; $disco.Content = $txt; $disco.Tag = $clave; $disco.Padding = '10,4'; $disco.MinWidth = 210; $disco.FontSize = 12
-        $disco.ToolTip = "Pulsa para cambiar: Automático $(($ed.Discos | ForEach-Object { "$([char]0x2192) $($_.Nombre)" }) -join ' ')"
-        if ($fijo) { $disco.SetResourceReference([Windows.Controls.Control]::BackgroundProperty, 'AcentoSuave') }
-        $disco.add_Click({ param($s, $e) CambiarDiscoEd $s.Tag })
+        $disco = New-Object Windows.Controls.StackPanel; $disco.Orientation = 'Horizontal'
+        $grupo = "dst_" + [guid]::NewGuid().ToString('N')
+        $auto = if ($fijo) { 'Automático' } elseif ($ed.Proy[$clave] -eq $EnEspera) { "Automático (espera)" } else { "Automático ($([char]0x2192) $(NombreDisco $ed.Proy[$clave]))" }
+        foreach ($op in @(, @('', $auto)) + @($ed.Discos | ForEach-Object { , @($_.Id, $_.Nombre) }) + @(, @($EsperaFija, 'Esperar'))) {
+            $rb = New-Object Windows.Controls.RadioButton; $rb.Style = $script:Estilos['Pastilla']; $rb.Content = $op[1]; $rb.GroupName = $grupo; $rb.Tag = "$($op[0])|$clave"
+            $rb.IsChecked = ("$fijo" -eq $op[0])
+            $rb.add_Checked({ param($s, $e) $v, $k = $s.Tag.Split('|', 2); if ("$($script:ed.Rep[$k])" -ne $v) { DestinoEd $k $v } })
+            [void]$disco.Children.Add($rb)
+        }
     } else { $disco = Texto "No se copia" 12 'Normal' 'Texto2'; $disco.MinWidth = 210; $disco.TextAlignment = 'Center' }
     $f = Fila @($chk, $nom, $dentro, $tam, $disco) @('Auto', '*', 'Auto', 'Auto', 'Auto')
     $f.Margin = "$(28 * $nivel),3,0,3"
+    # Filtro de arriba: solo lo que va a un disco, o solo lo que espera
+    $destino = if (-not $incluida) { 'no' } elseif (EsperaAlgo $ed.Proy[$clave]) { 'espera' } else { $ed.Proy[$clave] }
+    if ($ed.Filtro -ne 'todo' -and $destino -ne $ed.Filtro) { $f.Visibility = 'Collapsed' }
     if (-not $incluida) { $f.Opacity = 0.75 }
     return $f
 }
+function TodoCarpetaEd($i, $valor) {
+    $ed = $script:ed; $c = $ed.Carpetas[$i]
+    foreach ($u in @(UnidadesDe @($c) $ed.Div $ed.Exc)) { if ($valor) { $ed.Rep[$u.Clave] = $valor } else { $ed.Rep.Remove($u.Clave) } }
+    $ed.Cambios = $true; PintarEditor
+}
+function DestinoEd($clave, $valor) { $ed = $script:ed; if ($valor) { $ed.Rep[$clave] = $valor } else { $ed.Rep.Remove($clave) }; $ed.Cambios = $true; PintarEditor }
 function CambiarDiscoEd($clave) {
     # Automatico -> disco 1 -> disco 2 -> ... -> Automatico
     $ed = $script:ed; $ids = @($ed.Discos | ForEach-Object { $_.Id })
@@ -212,6 +247,22 @@ function GuardarEditorPlan {
     }
     $txt += "`n`nLo que has quitado del plan no se borra de los discos. Los cambios se aplican en la próxima copia."
     if ((Dialogo $ed.Win "Guardar el plan" $txt @('Cancelar', 'Guardar plan') 'Guardar plan') -ne 'Guardar plan') { return }
+    # Lo que ya estaba copiado en un disco y ahora no va a ese disco: se ofrece quitarlo para dejar sitio
+    $antes = LeerReparto; $quitar = @()
+    $ids = @($ed.Discos | ForEach-Object { $_.Id })
+    $todas = @(UnidadesDe $ed.Carpetas.ToArray() $ed.Div $ed.Exc -ConExcluidas); $porClave = @{}; foreach ($u in $todas) { $porClave[$u.Clave] = $u }
+    foreach ($k in @($antes.Keys)) {
+        $viejo = $antes[$k]; if ($ids -notcontains $viejo) { continue }
+        $u = $porClave[$k]; if (-not $u) { continue }             # ya no es una unidad (se abrio para elegir dentro o se quito la carpeta): se deja
+        if (-not $u.Excluida -and ($ed.Proy[$k] -eq $viejo)) { continue }   # sigue yendo a ese disco
+        $quitar += [pscustomobject]@{ Disco = $viejo; Ruta = (DestinoUnidad $u); Sueltos = [int]($u.Tipo -eq 'sueltos'); Bytes = [int64]$ed.Tam[$k]; Nombre = $u.Clave }
+    }
+    if ($quitar) {
+        $bytes = [int64](($quitar | Measure-Object Bytes -Sum).Sum)
+        $lista = (($quitar | Sort-Object Bytes -Descending | Select-Object -First 10 | ForEach-Object { "$([char]0x2022) $($_.Nombre) ($(TamTxt $_.Bytes))" }) -join "`n") + $(if ($quitar.Count -gt 10) { "`n... y $($quitar.Count - 10) más" } else { '' })
+        $r = Dialogo $ed.Win "¿Dejar sitio en el disco?" ("Estas $($quitar.Count) carpetas ($(TamTxt $bytes)) ya están copiadas en «$(NombreDisco $quitar[0].Disco)» y ahora no van a ese disco:`n`n$lista`n`n¿Las quito del disco en la próxima copia para dejar sitio a lo nuevo? En tu PC siguen igual.") @('Dejarlas en el disco', 'Quitarlas del disco') 'Quitarlas del disco'
+        if ($r -eq 'Quitarlas del disco') { GuardarQuitar (@(LeerQuitar) + @($quitar | Select-Object Disco, Ruta, Sueltos, Bytes)) }
+    }
     EscribirCarpetas $ed.Carpetas.ToArray()
     GuardarLista $FicheroDivididas $ed.Div
     GuardarLista $FicheroExcluidas $ed.Exc

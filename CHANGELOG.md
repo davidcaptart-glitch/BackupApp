@@ -1,5 +1,11 @@
 # Cambios
 
+## 0.5.1
+- En «Editar el plan» cada subcarpeta tiene tres opciones: «Automático», el disco que elijas o «Esperar» (se queda para un disco futuro aunque quepa).
+- «Todo su contenido»: manda de una vez todas las subcarpetas de una carpeta a un disco, a esperar o a automático.
+- Filtro «Mostrar»: ve solo lo que va a cada disco o solo lo que espera.
+- Al guardar, si algo que ya estaba copiado en un disco deja de ir a él, puedes quitarlo del disco en la próxima copia para dejar sitio. En tu PC no se toca.
+
 ## 0.5.0
 - Nueva ventana «Editar el plan de copias» (menú del escudo y ventana del plan): decides tú exactamente qué se copia y a qué disco.
 - «Elegir dentro»: abre cualquier carpeta para escoger sus subcarpetas una a una, a la profundidad que quieras.

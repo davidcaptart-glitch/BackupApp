@@ -396,6 +396,16 @@ function OcupacionPorDisco($rep, $tam) {
     return $oc
 }
 $EnEspera = "ESPERA"   # en reparto.csv: unidad que no cabe en ningun disco; espera a que registres otro
+$EsperaFija = "ESPERA_FIJA"   # en reparto.csv: el usuario ha decidido que de momento no vaya a ningun disco (Editar el plan)
+function EsperaAlgo($v) { $v -eq $EnEspera -or $v -eq $EsperaFija }
+# quitar_de_disco.csv: copias que el usuario ha sacado de un disco (Editar el plan) y que la proxima copia a ese disco
+# borra antes de copiar, para dejar sitio. Ruta = ruta relativa dentro de BACKUP; Sueltos = solo los archivos de esa carpeta.
+$FicheroQuitar = Join-Path $Datos "quitar_de_disco.csv"
+function LeerQuitar { if (Test-Path -LiteralPath $FicheroQuitar) { @(Import-Csv $FicheroQuitar -Delimiter ';') } else { @() } }
+function GuardarQuitar($lista) {
+    if (-not @($lista).Count) { Remove-Item -LiteralPath $FicheroQuitar -Force -ErrorAction SilentlyContinue; return }
+    @($lista) | Select-Object Disco, Ruta, Sueltos, Bytes | Export-Csv $FicheroQuitar -Delimiter ';' -NoTypeInformation -Encoding UTF8
+}
 
 function Repartir($unidades, $tam, $discos, $rep) {
     # Plan de copias. Las unidades sin disco (o en espera) van al disco con mas espacio util libre,
@@ -407,7 +417,7 @@ function Repartir($unidades, $tam, $discos, $rep) {
     $ids = @($discos | ForEach-Object { $_.Id })
     $oc = @{}; foreach ($d in $discos) { $oc[$d.Id] = [int64]0 }
     foreach ($k in @($rep.Keys)) { if ($oc.ContainsKey($rep[$k]) -and $tam.ContainsKey($k)) { $oc[$rep[$k]] += $tam[$k] } }
-    $nuevas = @($unidades | Where-Object { -not $rep.ContainsKey($_.Clave) -or $ids -notcontains $rep[$_.Clave] })
+    $nuevas = @($unidades | Where-Object { -not $rep.ContainsKey($_.Clave) -or ($ids -notcontains $rep[$_.Clave] -and $rep[$_.Clave] -ne $EsperaFija) })
     foreach ($u in ($nuevas | Sort-Object { $_.Carpeta.Prioridad }, { [int64]$tam[$_.Clave] })) {
         $t = [int64]$tam[$u.Clave]
         $mejor = $discos | Where-Object { (EspacioUtil $_) - $oc[$_.Id] -ge $t } |
@@ -477,11 +487,11 @@ function PlanDeCopias($discos, $rep, $tam, $carpetas = $Carpetas) {
     $porCarpeta = foreach ($c in $carpetas) {
         $us = @($unidades | Where-Object { $_.Carpeta.Origen -eq $c.Origen })
         $bytes = [int64](($us | ForEach-Object { [int64]$tam[$_.Clave] } | Measure-Object -Sum).Sum)
-        $esp = @($us | Where-Object { $rep[$_.Clave] -eq $EnEspera })
+        $esp = @($us | Where-Object { EsperaAlgo $rep[$_.Clave] })
         [pscustomobject]@{
             Carpeta = $c.Origen; Prioridad = $c.Prioridad; Bytes = $bytes; Unidades = $us.Count
             EnEspera = $esp.Count; BytesEspera = [int64](($esp | ForEach-Object { [int64]$tam[$_.Clave] } | Measure-Object -Sum).Sum)
-            Discos = @($us | ForEach-Object { $rep[$_.Clave] } | Where-Object { $_ -and $_ -ne $EnEspera } | Select-Object -Unique)
+            Discos = @($us | ForEach-Object { $rep[$_.Clave] } | Where-Object { $_ -and -not (EsperaAlgo $_) } | Select-Object -Unique)
             Frecuencia = (FrecuenciaSugerida $c.Origen $bytes)
             Crecimiento = (CrecimientoAnual $c.Origen)
         }

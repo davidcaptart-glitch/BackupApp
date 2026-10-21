@@ -292,6 +292,21 @@ foreach ($disco in $conectados) {
     Progreso "Copiando en «$($disco.Nombre)»" "Preparando el disco $($disco.Letra)..." 0
     New-Item -ItemType Directory -Path $disco.Raiz -Force | Out-Null
 
+    # 2b) Quitar del disco lo que el usuario saco de el en "Editar el plan" (deja sitio antes de copiar)
+    $pend = @(LeerQuitar); $mios = @($pend | Where-Object { $_.Disco -eq $disco.Id })
+    if ($mios) {
+        Progreso $null "Dejando sitio: quitando del disco $($mios.Count) carpetas que ya no van aquí..." 0
+        foreach ($q in $mios) {
+            $dst = Join-Path $disco.Raiz $q.Ruta
+            if (-not (Test-Path -LiteralPath $dst)) { continue }
+            if ([int]$q.Sueltos) { Get-ChildItem -LiteralPath $dst -File -Force -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue }
+            else { Remove-Item -LiteralPath $dst -Recurse -Force -ErrorAction SilentlyContinue }
+            Add-Content $Log "Quitado del disco (ya no va aqui): $dst"
+        }
+        GuardarQuitar @($pend | Where-Object { $_.Disco -ne $disco.Id })
+        $resumen += "$($disco.Nombre): quitadas $($mios.Count) carpetas que ya no van a este disco ($(GB (($mios | ForEach-Object { [int64]$_.Bytes } | Measure-Object -Sum).Sum)))"
+    }
+
     # 3) Compresion (solo NTFS)
     if ($disco.Formato -eq "NTFS") { compact.exe /c /i /q "$($disco.Raiz)" | Out-Null }
     else { Add-Content $Log "Formato $($disco.Formato): sin compresion" }
