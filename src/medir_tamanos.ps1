@@ -16,9 +16,9 @@ function MutexLibre($nombre) {
 }
 $script:mutexMedir = MutexLibre "BackupAppMedir"
 if (-not $script:mutexMedir) { exit }
-$copia = MutexLibre "BackupAppCopia"
-if (-not $copia) { exit }
-$copia.ReleaseMutex()
+# La copia se mira sin crear su mutex: si se creara aqui, el icono creeria que hay una copia en marcha mientras se mide
+$copia = $null
+if ([Threading.Mutex]::TryOpenExisting("BackupAppCopia", [ref]$copia)) { $copia.Dispose(); exit }
 
 $hoy = Get-Date -Format "yyyy-MM-dd"
 $totales = @{}

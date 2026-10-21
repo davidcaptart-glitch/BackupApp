@@ -1,5 +1,9 @@
 # Cambios
 
+## 0.6.4
+- Arreglado: mientras se medían los tamaños de las carpetas, la ventana decía que había una copia en marcha.
+- El recuadro de actividad del menú muestra también la medición diaria de tamaños.
+
 ## 0.6.3
 - Liberar espacio: en «Ya copiado», cada carpeta tiene «Elegir subcarpetas». Abre esa carpeta en Explorar discos para borrar del PC solo las subcarpetas que quieras (ya copiadas, sin volver a copiarlas) y quedarte con el resto.
 

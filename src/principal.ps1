@@ -225,6 +225,7 @@ function PintarCopia {
     } else { $r.Visibility = 'Collapsed' }
     $w.FindName('Nada').Visibility = if (-not $activa -and -not $otra -and -not $res) { 'Visible' } else { 'Collapsed' }
 }
+function Midiendo { $m = $null; if ([Threading.Mutex]::TryOpenExisting("BackupAppMedir", [ref]$m)) { $m.Dispose(); return $true }; return $false }
 function PintarActividad {
     # Recuadro del menu: siempre a la vista lo que se esta haciendo
     $p = $script:Principal; if (-not $p) { return }
@@ -237,6 +238,9 @@ function PintarActividad {
         $w.FindName('ActPct').Text = if ($f -gt 0) { "{0:N0} %" -f [math]::Floor($f * 100) } else { "" }
     } elseif (Copiando) {
         $a.Visibility = 'Visible'; $w.FindName('ActTitulo').Text = "Copia en marcha"; $w.FindName('ActDetalle').Text = ""; $w.FindName('ActPct').Text = ""; $w.FindName('ActBarra').Value = 0
+    } elseif (Midiendo) {
+        # La medicion diaria de tamanos (otro proceso, con prioridad minima)
+        $a.Visibility = 'Visible'; $w.FindName('ActTitulo').Text = "Midiendo tus carpetas"; $w.FindName('ActDetalle').Text = "Medición diaria de tamaños"; $w.FindName('ActPct').Text = ""; $w.FindName('ActBarra').Value = 0
     } else { $a.Visibility = 'Collapsed' }
 }
 
@@ -260,6 +264,8 @@ function RevisarActividad {
         EscribirJson $FicheroEstadoCopia $e; $cambio = $true
     }
     $cp = Copiando
+    $md = Midiendo
+    if ($md -ne $script:midiendoAntes) { $script:midiendoAntes = $md; $cambio = $true }
     if ($cp -ne $script:copiandoAntes) {
         # Empieza o acaba una copia: Inicio cambia su boton y su texto
         $script:copiandoAntes = $cp; $cambio = $true
