@@ -35,7 +35,7 @@ $XamlExplorador = @"
 "@
 
 function MostrarExplorador($ruta = $null) {
-    if ($script:exp -and $script:exp.Win -and $script:exp.Win.IsVisible) { [void]$script:exp.Win.Activate(); if ($ruta) { IrA $ruta }; return }
+    if ($script:exp -and (VentanaAbierta $script:exp.Win)) { MostrarSinBloquear $script:exp.Win; if ($ruta) { IrA $ruta }; return }
     $w = NuevaVentana $XamlExplorador
     $script:exp = @{ Win = $w; Ruta = $null; Filas = @(); Sel = @{}; Medidor = $null; Proc = $null
                      Cola = (New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]')

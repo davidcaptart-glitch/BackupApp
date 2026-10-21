@@ -34,7 +34,7 @@ $XamlEditor = @"
 "@
 
 function MostrarEditorPlan($alGuardar = $null) {
-    if ($script:ed -and $script:ed.Win -and $script:ed.Win.IsVisible) { [void]$script:ed.Win.Activate(); return }
+    if ($script:ed -and (VentanaAbierta $script:ed.Win)) { MostrarSinBloquear $script:ed.Win; return }
     $w = NuevaVentana $XamlEditor
     $car = New-Object 'System.Collections.Generic.List[object]'
     foreach ($c in @(LeerCarpetas)) { $car.Add([pscustomobject]@{ Origen = $c.Origen; Destino = $c.Destino; Prioridad = $c.Prioridad }) }

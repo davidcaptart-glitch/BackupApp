@@ -14,12 +14,19 @@ param([switch]$DesdeBandeja, [switch]$SoloNube, [string]$Archivar)   # -Archivar
 
 . (Join-Path $PSScriptRoot "config.ps1")
 . (Join-Path $PSScriptRoot "ui.ps1")
+CapturarErrores 'copia'
 # La ventana de la copia va con su propio boton en la barra de tareas: si compartiera el del programa, al pulsar
 # BackupApp Windows mostraria la copia en vez de abrir la ventana principal
 [void][BackupApp.Dwm]::SetCurrentProcessExplicitAppUserModelID("$IdAplicacion.Copia")
 
 function GB($b) { if ([math]::Abs([double]$b) -lt 1GB) { "{0:N0} MB" -f ($b / 1MB) } else { "{0:N1} GB" -f ($b / 1GB) } }
-function Aviso($titulo, $texto, $botones = @('Aceptar'), $primario = $null) { return (Dialogo $null $titulo $texto $botones $primario) }
+function Aviso($titulo, $texto, $botones = @('Aceptar'), $primario = $null) {
+    # Con la ventana principal abierta: los avisos de un solo boton son el resultado (se ve en «Copia») y las preguntas
+    # se contestan alli. Sin ella, un dialogo como siempre.
+    if (-not $script:remoto) { return (Dialogo $null $titulo $texto $botones $primario) }
+    if (@($botones).Count -le 1) { Resultado $titulo $texto; return @($botones)[0] }
+    return (PreguntaRemota $titulo $texto $botones $primario)
+}
 
 New-Item -ItemType Directory -Path $CarpetaLogs -Force | Out-Null
 # La medicion de tamanos lee los mismos discos: se para mientras se copia (vuelve a medir otro dia).
@@ -30,11 +37,48 @@ Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction Silen
     Where-Object { $_.CommandLine -like '*medir_tamanos.ps1*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 $Log =Join-Path $CarpetaLogs ("backup_" + (Get-Date -Format "yyyy-MM-dd_HHmm") + ".log")
 
-# ---------- Ventana de progreso ----------
+# ---------- Copia mirada desde la ventana principal ----------
+# Si el icono esta abierto, la copia no abre ventana: cuenta lo que hace en copia_estado.json (principal.ps1 lo
+# ensena en «Copia» y en el menu), pregunta por pregunta.json y se detiene si aparece detener.senal.
+$script:remoto = (-not $SoloNube) -and (BandejaViva)
+$script:est = [ordered]@{ Id = [guid]::NewGuid().ToString('N'); Pid = $PID; Inicio = (Get-Date).ToString('o'); Fase = 'copiando'
+                          Titulo = 'Preparando la copia...'; Detalle = ''; Fraccion = 0.0; Cuenta = ''; Log = $Log; Resultado = $null }
+$script:estEscrito = [datetime]::MinValue
+function EstadoRemoto([switch]$Ya) {
+    if (-not $Ya -and ((Get-Date) - $script:estEscrito).TotalMilliseconds -lt 400) { return }
+    $script:estEscrito = Get-Date; EscribirJson $FicheroEstadoCopia ([pscustomobject]$script:est)
+}
+function Resultado($titulo, $texto, $explorar = $null) {
+    $script:est.Fase = 'fin'
+    $script:est.Resultado = [pscustomobject]@{ Titulo = $titulo; Texto = $texto; Fecha = (Get-Date).ToString('o'); Explorar = $explorar }
+    EstadoRemoto -Ya
+}
+function PreguntaRemota($titulo, $texto, $botones, $primario) {
+    $id = [guid]::NewGuid().ToString('N')
+    $script:est.Fase = 'pregunta'; EstadoRemoto -Ya
+    Remove-Item -LiteralPath $FicheroRespuesta -Force -ErrorAction SilentlyContinue
+    EscribirJson $FicheroPregunta ([pscustomobject]@{ Id = $id; Titulo = $titulo; Texto = $texto; Botones = @($botones); Primario = $primario })
+    $r = $null; $vista = Get-Date
+    while ($true) {
+        Start-Sleep -Milliseconds 300
+        $r = LeerJson $FicheroRespuesta
+        if ($r -and $r.Id -eq $id) { break }
+        $r = $null
+        if (((Get-Date) - $vista).TotalSeconds -ge 10) { $vista = Get-Date; if (-not (BandejaViva)) { break } }
+    }
+    Remove-Item -LiteralPath $FicheroPregunta, $FicheroRespuesta -Force -ErrorAction SilentlyContinue
+    $script:est.Fase = 'copiando'; EstadoRemoto -Ya
+    if ($r) { return "$($r.Boton)" }
+    $script:remoto = $false   # el icono se ha cerrado: se pregunta aqui
+    return (Dialogo $null $titulo $texto $botones $primario)
+}
+
+# ---------- Ventana de progreso (solo si no hay ventana principal) ----------
 $script:detener = $false
 $script:prog = $null; $script:cerrandoProgreso = $false
 function AbrirProgreso {
     if ($SoloNube) { return }
+    if ($script:remoto) { Remove-Item -LiteralPath $FicheroDetener -Force -ErrorAction SilentlyContinue; EstadoRemoto -Ya; return }
     $w = NuevaVentana @"
 <Window $VentanaBase Title="Copia de seguridad" Width="560" SizeToContent="Height" ResizeMode="CanMinimize" WindowStartupLocation="CenterScreen">
   <StackPanel Margin="28,24,28,22">
@@ -63,6 +107,11 @@ function AbrirProgreso {
 }
 function Progreso($titulo, $detalle, [double]$fraccion, $cuenta = '') {
     if ($env:BACKUPAPP_PRUEBA -and $cuenta -ne $script:ultimaCuenta) { $script:ultimaCuenta = $cuenta; [Console]::WriteLine("[PROGRESO] {0:P0} | $detalle | $cuenta" -f $fraccion) }
+    if ($script:remoto) {
+        if ($titulo) { $script:est.Titulo = $titulo }
+        $script:est.Detalle = $detalle; $script:est.Fraccion = [math]::Max(0.0, [math]::Min(1.0, $fraccion)); $script:est.Cuenta = $cuenta
+        EstadoRemoto; Bombear; return
+    }
     if (-not $script:prog) { return }
     $w = $script:prog
     if ($titulo) { $w.FindName('Titulo').Text = $titulo }
@@ -74,6 +123,11 @@ function Progreso($titulo, $detalle, [double]$fraccion, $cuenta = '') {
 function CerrarProgreso { if ($script:prog) { $script:cerrandoProgreso = $true; $script:prog.Close(); $script:prog = $null } }
 function Bombear {
     [Windows.Forms.Application]::DoEvents()
+    # «Detener» en la ventana principal
+    if ($script:remoto -and -not $script:detener -and (Test-Path -LiteralPath $FicheroDetener)) {
+        Remove-Item -LiteralPath $FicheroDetener -Force -ErrorAction SilentlyContinue
+        $script:detener = $true; $script:est.Titulo = "Deteniendo la copia..."; EstadoRemoto -Ya
+    }
     # «Ver la copia» en la ventana principal: se trae la ventana al frente, centrada en la pantalla principal
     # (minimizada o en otro monitor no se encontraba)
     $sv = Join-Path $Datos "ver_copia.senal"
@@ -346,7 +400,11 @@ if ($registrados -and (-not $DesdeBandeja -or -not $conectados)) {
         if ($pendientes) { $txt += " Toca copiar: " + ($pendientes -join ", ") + "." }
         $txt += "`n`nConecta uno y pulsa «Ya está conectado». Si lo dejas para más tarde, el escudo te lo recordará."
         $r = Aviso "Conecta un disco de backup" $txt @('Más tarde', 'Ya está conectado') 'Ya está conectado'
-        if ($r -ne 'Ya está conectado') { if ($nubes) { break } else { exit } }   # sin disco, al menos la copia en la nube
+        if ($r -ne 'Ya está conectado') {
+            if ($nubes) { break }   # sin disco, al menos la copia en la nube
+            if ($script:remoto) { Resultado "Copia aplazada" "No había ningún disco de backup conectado. Conéctalo y pulsa «Hacer copia ahora»." }
+            exit
+        }
         $conectados = @(DiscosConectados)
     }
 }
@@ -481,6 +539,11 @@ foreach ($disco in $conectados) {
     }
     if (-not $candidatas) { continue }
 
+    if ($script:remoto) {
+        # Con la ventana principal no se abre otra ventana: se dice en el resultado y se eligen alli («Elegir qué borrar del PC»)
+        $resumen += "En «$($disco.Nombre)» hay $($candidatas.Count) carpetas que llevan más de $MesesSinUso meses sin cambios ($(GB (($candidatas | Measure-Object Bytes -Sum).Sum))). Si no las necesitas en el PC, puedes borrarlas con «Elegir qué borrar del PC»."
+        continue
+    }
     $elegidas = @(ElegirCarpetasALiberar $candidatas $disco)
     if (-not $elegidas) { continue }
     $bytes = ($elegidas | Measure-Object Bytes -Sum).Sum
@@ -578,7 +641,12 @@ $txt = ($resumen -join "`n")
 if ($faltan -and -not $script:detener) { $txt += "`n`nTodavía toca copiar: " + ($faltan -join ", ") + ". Conéctalo cuando puedas." }
 if ($conectados) { $txt += "`n`nAntes de desconectar los discos, usa «Expulsar» en el Explorador." }
 $tit = if ($script:detener) { "Copia detenida" } elseif ($hayError) { "Copia terminada con errores" } else { "Copia terminada" }
-if ($conectados -and $Carpetas) {
+if ($script:remoto) {
+    # La ventana principal ensena el resultado con el boton «Elegir qué borrar del PC»
+    $ini = if ($conectados -and $Carpetas) { if ($Carpetas.Count -eq 1) { $Carpetas[0].Origen } else { Split-Path $Carpetas[0].Origen -Parent } } else { $null }
+    if ($ini) { $txt += "`n`nSi quieres hacer sitio en tu PC, puedes elegir qué subcarpetas ya copiadas borrar (sin volver a copiarlas)." }
+    Resultado $tit $txt $ini
+} elseif ($conectados -and $Carpetas) {
     # Con la copia hecha, se puede elegir que subcarpetas borrar del PC: el icono abre Explorar discos en tus carpetas
     $txt += "`n`nSi quieres hacer sitio en tu PC, puedes elegir qué subcarpetas ya copiadas borrar (sin volver a copiarlas)."
     if ((Aviso $tit $txt @('Cerrar', 'Elegir qué borrar del PC') 'Elegir qué borrar del PC') -eq 'Elegir qué borrar del PC') {

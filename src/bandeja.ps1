@@ -21,12 +21,16 @@ if (-not $mutex.WaitOne(0)) {
 . (Join-Path $PSScriptRoot "config.ps1")
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing, Microsoft.VisualBasic
 . (Join-Path $PSScriptRoot "ui.ps1")
+CapturarErrores 'icono'
 . (Join-Path $PSScriptRoot "asistente.ps1")
 . (Join-Path $PSScriptRoot "actualizar.ps1")
 . (Join-Path $PSScriptRoot "optimizar.ps1")
 . (Join-Path $PSScriptRoot "explorador.ps1")
 . (Join-Path $PSScriptRoot "editar_plan.ps1")
-[System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'Idle'
+. (Join-Path $PSScriptRoot "principal.ps1")
+# Prioridad normal: con la prioridad minima (Idle), si el PC estaba ocupado la ventana se quedaba congelada.
+# Lo pesado va en hilos de segundo plano con prioridad baja (config.ps1) o en otro proceso (medicion, copia).
+[System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'Normal'
 
 $ScriptBackup = Join-Path $PSScriptRoot "backup_mensual.ps1"
 $ScriptMedir  = Join-Path $PSScriptRoot "medir_tamanos.ps1"
@@ -73,10 +77,12 @@ function Copiando {
 function LanzarCopia([switch]$SoloNube) {
     if (Copiando) { if (-not $SoloNube) { Avisar "Backup" "Ya hay una copia en marcha." $null }; return }
     $modo = if ($SoloNube) { "-SoloNube" } else { "-DesdeBandeja" }
+    Remove-Item -LiteralPath $FicheroDetener, $FicheroPregunta, $FicheroRespuesta -Force -ErrorAction SilentlyContinue
     $script:copiaNube = [bool]$SoloNube -or [bool]@(LeerNubes).Count
     $script:proceso = Start-Process powershell.exe -PassThru -ArgumentList `
         "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$ScriptBackup`" $modo"
     try { $script:proceso.PriorityClass = 'BelowNormal' } catch {}
+    if (-not $SoloNube) { MostrarCopia }   # lo que hace la copia se ve en la ventana principal
 }
 
 # ---------- Cambios pendientes ----------
@@ -127,24 +133,24 @@ $icono = New-Object Windows.Forms.NotifyIcon
 $ficheroIcono = RutaRecurso "BackupApp.ico"
 $icono.Icon = if ($ficheroIcono) { New-Object Drawing.Icon $ficheroIcono, 16, 16 } else { [Drawing.SystemIcons]::Shield }
 $menu = New-Object Windows.Forms.ContextMenuStrip
-function MI($texto) { New-Object Windows.Forms.ToolStripMenuItem $texto }
+function ItemMenu($texto) { New-Object Windows.Forms.ToolStripMenuItem $texto }
 function SEP { New-Object Windows.Forms.ToolStripSeparator }
-$miVersion = MI "BackupApp $Version"; $miVersion.Enabled = $false
-$miEstado = MI "Estado"; $miEstado.Enabled = $false
-$miCopiar = MI "Hacer copia ahora"
-$miDiscos = MI "Discos de backup"
-$miTam    = MI "Tamano de las carpetas..."
-$miPlan   = MI "Plan de copias..."
-$miEditar = MI "Editar el plan de copias..."
-$miAsis   = MI "Asistente de configuracion..."
-$miLiberar = MI "Liberar espacio..."
-$miExplorar = MI "Explorar discos..."
-$miAnadir = MI "Anadir carpeta..."
-$miQuitar = MI "Quitar carpeta"
-$miLogs   = MI "Abrir registros"
-$miActual = MI "Buscar actualizaciones..."
-$miAutoAct = MI "Buscar actualizaciones automáticamente"; $miAutoAct.CheckOnClick = $true
-$miSalir  = MI "Salir"
+$miVersion = ItemMenu "BackupApp $Version"; $miVersion.Enabled = $false
+$miEstado = ItemMenu "Estado"; $miEstado.Enabled = $false
+$miCopiar = ItemMenu "Hacer copia ahora"
+$miDiscos = ItemMenu "Discos de backup"
+$miTam    = ItemMenu "Tamano de las carpetas..."
+$miPlan   = ItemMenu "Plan de copias..."
+$miEditar = ItemMenu "Editar el plan de copias..."
+$miAsis   = ItemMenu "Asistente de configuracion..."
+$miLiberar = ItemMenu "Liberar espacio..."
+$miExplorar = ItemMenu "Explorar discos..."
+$miAnadir = ItemMenu "Anadir carpeta..."
+$miQuitar = ItemMenu "Quitar carpeta"
+$miLogs   = ItemMenu "Abrir registros"
+$miActual = ItemMenu "Buscar actualizaciones..."
+$miAutoAct = ItemMenu "Buscar actualizaciones automáticamente"; $miAutoAct.CheckOnClick = $true
+$miSalir  = ItemMenu "Salir"
 [void]$miDiscos.DropDownItems.Add("(cargando)"); [void]$miQuitar.DropDownItems.Add("(cargando)")
 [void]$menu.Items.AddRange(@($miVersion, $miEstado,(SEP), $miCopiar, $miDiscos, $miPlan, $miEditar, $miTam, $miLiberar, $miExplorar, (SEP), $miAsis, $miAnadir, $miQuitar, (SEP), $miActual, $miAutoAct, $miLogs, $miSalir))
 $icono.ContextMenuStrip = $menu
@@ -159,6 +165,7 @@ $icono.add_BalloonTipClicked({
     if ($a -eq 'copiar')            { LanzarCopia }
     elseif ($a -eq 'tamanos')       { MostrarTamanos }
     elseif ($a -eq 'plan')          { MostrarPlan }
+    elseif ($a -eq 'copia')         { MostrarCopia }
     elseif ($a -eq 'asistente')     { AbrirAsistente }
     elseif ($a -eq 'liberar')       { MostrarLiberarEspacio }
     elseif ($a -eq 'actualizar' -and $script:releaseNueva) { MostrarNovedades $script:releaseNueva }
@@ -218,35 +225,35 @@ function MenuDiscos {
         $c = $con | Where-Object { $_.Id -eq $d.Id } | Select-Object -First 1
         $estado = if ($c) { "conectado en $($c.Letra)" } else { "no conectado" }
         $ult = if ($d.UltimaCopia) { "copia " + $d.UltimaCopia.Substring(0, 10) } else { "sin copias" }
-        $it = MI "$($d.Nombre)  -  $estado  -  $ult"
+        $it = ItemMenu "$($d.Nombre)  -  $estado  -  $ult"
         if ($c) {
-            $ab = MI "Abrir"; $ab.Tag = $c.Raiz; $ab.add_Click({ param($s, $e) Start-Process explorer.exe $s.Tag })
+            $ab = ItemMenu "Abrir"; $ab.Tag = $c.Raiz; $ab.add_Click({ param($s, $e) Start-Process explorer.exe $s.Tag })
             [void]$it.DropDownItems.Add($ab)
         }
-        $rn = MI "Cambiar nombre..."; $rn.Tag = $d.Id; $rn.add_Click({ param($s, $e) RenombrarDesdeMenu $s.Tag })
+        $rn = ItemMenu "Cambiar nombre..."; $rn.Tag = $d.Id; $rn.add_Click({ param($s, $e) RenombrarDesdeMenu $s.Tag })
         [void]$it.DropDownItems.Add($rn)
-        $ol = MI "Dejar de usar este disco"; $ol.Tag = $d.Id; $ol.add_Click({ param($s, $e) OlvidarDisco $s.Tag })
+        $ol = ItemMenu "Dejar de usar este disco"; $ol.Tag = $d.Id; $ol.add_Click({ param($s, $e) OlvidarDisco $s.Tag })
         [void]$it.DropDownItems.Add($ol)
         [void]$miDiscos.DropDownItems.Add($it)
     }
     foreach ($n in @(LeerNubes)) {
         $ult = if ($n.UltimaCopia) { "copia " + $n.UltimaCopia.Substring(0, 10) } else { "sin copias" }
-        $it = MI "$($n.Nombre) (nube)  -  $(if (NubeDisponible $n) { $ult } else { 'carpeta no encontrada' })"
-        if ((NubeDisponible $n) -and $n.Tipo -ne 'rclone') { $ab = MI "Abrir carpeta"; $ab.Tag = (RutaNube $n); $ab.add_Click({ param($s, $e) New-Item -ItemType Directory -Path $s.Tag -Force | Out-Null; Start-Process explorer.exe $s.Tag }); [void]$it.DropDownItems.Add($ab) }
-        $ol = MI "Dejar de copiar aquí"; $ol.Tag = $n.Id; $ol.add_Click({ param($s, $e) OlvidarNube $s.Tag }); [void]$it.DropDownItems.Add($ol)
+        $it = ItemMenu "$($n.Nombre) (nube)  -  $(if (NubeDisponible $n) { $ult } else { 'carpeta no encontrada' })"
+        if ((NubeDisponible $n) -and $n.Tipo -ne 'rclone') { $ab = ItemMenu "Abrir carpeta"; $ab.Tag = (RutaNube $n); $ab.add_Click({ param($s, $e) New-Item -ItemType Directory -Path $s.Tag -Force | Out-Null; Start-Process explorer.exe $s.Tag }); [void]$it.DropDownItems.Add($ab) }
+        $ol = ItemMenu "Dejar de copiar aquí"; $ol.Tag = $n.Id; $ol.add_Click({ param($s, $e) OlvidarNube $s.Tag }); [void]$it.DropDownItems.Add($ol)
         [void]$miDiscos.DropDownItems.Add($it)
     }
     if ($script:discosCache -or @(LeerNubes)) { [void]$miDiscos.DropDownItems.Add((SEP)) }
-    $reg = MI "Registrar disco conectado"
+    $reg = ItemMenu "Registrar disco conectado"
     $cands = @(DiscosCandidatos)
     foreach ($dr in $cands) {
         $l = $dr.Name.Substring(0, 2)
         $etq = if ($dr.VolumeLabel) { " $($dr.VolumeLabel)" } else { "" }
-        $x = MI "$l$etq  ($(FmtTam $dr.TotalSize))"; $x.Tag = $l
+        $x = ItemMenu "$l$etq  ($(FmtTam $dr.TotalSize))"; $x.Tag = $l
         $x.add_Click({ param($s, $e) RegistrarDesdeLetra $s.Tag })
         [void]$reg.DropDownItems.Add($x)
     }
-    if (-not $cands) { $x = MI "(conecta un disco externo nuevo)"; $x.Enabled = $false; [void]$reg.DropDownItems.Add($x) }
+    if (-not $cands) { $x = ItemMenu "(conecta un disco externo nuevo)"; $x.Enabled = $false; [void]$reg.DropDownItems.Add($x) }
     [void]$miDiscos.DropDownItems.Add($reg)
 }
 
@@ -313,11 +320,11 @@ function QuitarCarpeta($ruta) {
 function MenuCarpetas {
     $miQuitar.DropDownItems.Clear()
     foreach ($c in $Carpetas) {
-        $it = MI $c.Origen; $it.Tag = $c.Origen
+        $it = ItemMenu $c.Origen; $it.Tag = $c.Origen
         $it.add_Click({ param($s, $e) QuitarCarpeta $s.Tag })
         [void]$miQuitar.DropDownItems.Add($it)
     }
-    if (-not $Carpetas) { $x = MI "(ninguna)"; $x.Enabled = $false; [void]$miQuitar.DropDownItems.Add($x) }
+    if (-not $Carpetas) { $x = ItemMenu "(ninguna)"; $x.Enabled = $false; [void]$miQuitar.DropDownItems.Add($x) }
 }
 $miAnadir.add_Click({ AnadirCarpeta })
 $menu.add_Opening({ MenuDiscos; MenuCarpetas; ActualizarTooltip; EstiloMenu $menu })
@@ -392,7 +399,7 @@ function MedicionTerminada {
     } elseif ($llenos) {
         Avisar "Un disco se esta llenando" ((($llenos | ForEach-Object { "$($_.Nombre): {0:N0} %" -f $_.Uso }) -join "`n") + "`nLas carpetas nuevas iran a los discos con mas espacio.") 'tamanos'
     }
-    if ($script:formTam -and $script:formTam.IsVisible) { RellenarTamanos }
+    if ($script:formTam -and (VentanaAbierta $script:formTam)) { RellenarTamanos }
 }
 $XamlTamanos = @"
 <Window $VentanaBase Title="Tamaño de las carpetas" Width="940" Height="760" MinWidth="720" MinHeight="520" WindowStartupLocation="CenterScreen">
@@ -481,7 +488,7 @@ function RellenarTamanos {
     }
 }
 function MostrarTamanos {
-    if ($script:formTam -and $script:formTam.IsVisible) { RellenarTamanos; [void]$script:formTam.Activate(); return }
+    if ($script:formTam -and (VentanaAbierta $script:formTam)) { RellenarTamanos; MostrarSinBloquear $script:formTam; return }
     $w = NuevaVentana $XamlTamanos
     $script:formTam = $w
     $w.FindName('BtnMedir').add_Click({ LanzarMedicion; RellenarTamanos })
@@ -492,23 +499,17 @@ function MostrarTamanos {
     MostrarSinBloquear $w
 }$miTam.add_Click({ MostrarTamanos })
 
-# ---------- Plan de copias ----------
+# ---------- Inicio: el plan de copias (pantalla de la ventana principal) ----------
 $XamlPlan = @"
-<Window $VentanaBase Title="BackupApp" Width="880" Height="760" MinWidth="660" MinHeight="520" WindowStartupLocation="CenterScreen">
+<Window $VentanaBase Title="Inicio">
   <Grid Margin="34,28,34,24">
-    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-    <TextBlock Text="BackupApp" FontSize="28" FontWeight="SemiBold" FontFamily="Segoe UI Variable Display, Segoe UI"/>
-    <TextBlock x:Name="Estado" Grid.Row="1" Foreground="{DynamicResource Texto2}" Margin="0,6,0,16" TextWrapping="Wrap"/>
-    <WrapPanel Grid.Row="2" Margin="0,0,0,4">
-      <Button x:Name="BtnCopiar" Content="Hacer copia ahora" Style="{DynamicResource Primario}" Margin="0,0,8,8" MinWidth="150"/>
-      <Button x:Name="BtnEditar" Content="Editar el plan" Margin="0,0,8,8" MinWidth="150"/>
-      <Button x:Name="BtnLiberar" Content="Liberar espacio" Margin="0,0,8,8" MinWidth="150"/>
-      <Button x:Name="BtnExplorar" Content="Explorar discos" Margin="0,0,8,8" MinWidth="150"/>
-      <Button x:Name="BtnTam" Content="Tamaños" Margin="0,0,8,8" MinWidth="150"/>
-      <Button x:Name="BtnAsis" Content="Asistente" Margin="0,0,8,8" MinWidth="150"/>
-      <Button x:Name="BtnAct" Content="Buscar actualizaciones" Margin="0,0,8,8" MinWidth="150"/>
-    </WrapPanel>
-    <DockPanel Grid.Row="3" Margin="0,14,0,10">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
+    <DockPanel>
+      <Button x:Name="BtnCopiar" DockPanel.Dock="Right" Content="Hacer copia ahora" Style="{DynamicResource Primario}" MinWidth="170" VerticalAlignment="Center"/>
+      <TextBlock Text="Inicio" FontSize="28" FontWeight="SemiBold" FontFamily="Segoe UI Variable Display, Segoe UI"/>
+    </DockPanel>
+    <TextBlock x:Name="Estado" Grid.Row="1" Foreground="{DynamicResource Texto2}" Margin="0,6,0,10" TextWrapping="Wrap"/>
+    <DockPanel Grid.Row="2" Margin="0,8,0,10">
       <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
         <TextBlock Text="Discos que vas a comprar:" Foreground="{DynamicResource Texto2}" VerticalAlignment="Center" Margin="0,0,6,0"/>
         <RadioButton x:Name="Compra0" Style="{DynamicResource Pastilla}" GroupName="Compra" Content="El que convenga" Tag="0"/>
@@ -517,35 +518,22 @@ $XamlPlan = @"
       </StackPanel>
       <TextBlock Text="Plan de copias" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center"/>
     </DockPanel>
-    <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"><StackPanel x:Name="ListaPlan"/></ScrollViewer>
-    <DockPanel Grid.Row="5" Margin="0,18,0,0">
-      <TextBlock DockPanel.Dock="Left" VerticalAlignment="Center" FontSize="11.5" Foreground="{DynamicResource Texto2}" TextWrapping="Wrap" MaxWidth="560" Text="Puedes tener abiertas a la vez la copia, Liberar espacio y Explorar discos. Esta ventana también se abre con clic derecho en el escudo, junto al reloj."/>
-      <Button x:Name="BtnCerrar" Content="Cerrar" HorizontalAlignment="Right" MinWidth="110"/>
-    </DockPanel>
+    <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"><StackPanel x:Name="ListaPlan"/></ScrollViewer>
   </Grid>
 </Window>
 "@
 function EstadoPrincipal($w) {
-    $w.FindName('Estado').Text = if (Copiando) { "Hay una copia en marcha. Mientras tanto puedes liberar espacio o explorar los discos." } else { (TextoEstado) -replace "`r?`n", "  $([char]0x00B7)  " }
-    $b = $w.FindName('BtnCopiar'); $b.Content = if (Copiando) { "Ver la copia" } else { "Hacer copia ahora" }
+    $cp = Copiando
+    $w.FindName('Estado').Text = if ($cp) { "Hay una copia en marcha: la ves en «Copia». Mientras tanto puedes liberar espacio o explorar los discos." } else { (TextoEstado) -replace "\s*\|\s*", "  $([char]0x00B7)  " }
+    $w.FindName('BtnCopiar').Content = if ($cp) { "Ver la copia" } else { "Hacer copia ahora" }
 }
 function MostrarPlan {
-    # Una sola ventana principal: si ya esta abierta, se trae al frente
-    if ($script:ventanaPrincipal -and $script:ventanaPrincipal.IsVisible) { $script:ventanaPrincipal.Activate(); return }
+    # Inicio: una sola pantalla; si ya esta, se vuelve a ella y se recalcula
+    if ($script:ventanaPrincipal -and (VentanaAbierta $script:ventanaPrincipal)) { MostrarSinBloquear $script:ventanaPrincipal; EstadoPrincipal $script:ventanaPrincipal; RellenarPlan $script:ventanaPrincipal; return }
     $w = NuevaVentana $XamlPlan
     $script:ventanaPrincipal = $w
-    $w.FindName('BtnCerrar').add_Click({ param($s, $e) [Windows.Window]::GetWindow($s).Close() })
-    $w.FindName('BtnCopiar').add_Click({ param($s, $e)
-        # Con una copia en marcha, el boton trae su ventana al frente (la copia corre en otro proceso: se le avisa con una senal)
-        if (Copiando) { Set-Content -LiteralPath (Join-Path $Datos "ver_copia.senal") 'ver' -ErrorAction SilentlyContinue } else { LanzarCopia }
-        EstadoPrincipal ([Windows.Window]::GetWindow($s))
-    })
-    $w.FindName('BtnAsis').add_Click({ param($s, $e) [Windows.Window]::GetWindow($s).Close(); AbrirAsistente })
-    $w.FindName('BtnEditar').add_Click({ param($s, $e) [Windows.Window]::GetWindow($s).Close(); MostrarEditorPlan 'AsistenteTerminado' })
-    $w.FindName('BtnLiberar').add_Click({ MostrarLiberarEspacio })
-    $w.FindName('BtnExplorar').add_Click({ MostrarExplorador })
-    $w.FindName('BtnTam').add_Click({ MostrarTamanos })
-    $w.FindName('BtnAct').add_Click({ IniciarBusqueda $true })
+    $w.FindName('BtnCopiar').add_Click({ if (Copiando) { MostrarCopia } else { LanzarCopia } })
+    $w.add_Closed({ $script:ventanaPrincipal = $null })
     EstadoPrincipal $w
     $actual = TamanoDiscoNuevo
     foreach ($n in 'Compra0', 'Compra1', 'Compra2') {
@@ -555,21 +543,47 @@ function MostrarPlan {
     MostrarSinBloquear $w
     RellenarPlan $w
 }
+function CargandoPlan($w, $titulo, $texto) {
+    $l = $w.FindName('ListaPlan'); $l.Children.Clear()
+    $p = New-Object Windows.Controls.ProgressBar; $p.Height = 4; $p.IsIndeterminate = $true; $p.BorderThickness = 0; $p.Margin = '0,12,0,0'
+    Recurso $p ([Windows.Controls.ProgressBar]::ForegroundProperty) 'Acento'; Recurso $p ([Windows.Controls.ProgressBar]::BackgroundProperty) 'Barra'
+    [void]$l.Children.Add((Tarjeta (Apilar @((Texto $titulo 15 'SemiBold'), (Texto $texto 12 'Normal' 'Texto2'), $p))))
+}
 function RellenarPlan($w) {
-    $w.Cursor = [Windows.Input.Cursors]::Wait
-    $discos = @(LeerDiscos)
-    $rep = if ($discos) { AsignarNuevas } else { LeerReparto }
-    $con = @(DiscosConectados)
-    $info = foreach ($d in $discos) {
-        $c = $con | Where-Object { $_.Id -eq $d.Id } | Select-Object -First 1
-        $ult = if ($d.UltimaCopia) { "última copia $($d.UltimaCopia.Substring(0, 10))" } else { "sin copias aún" }
-        [pscustomobject]@{ Id = $d.Id; Detalle = "$(if ($c) { "conectado en $($c.Letra)" } else { 'no conectado' })  $([char]0x00B7)  $ult" }
-    }
-    $unidades = @(UnidadesActuales); $tam = TamanosDe $unidades
-    $np = @(foreach ($n in @(LeerNubes | Where-Object { NubeDisponible $_ })) { $n | Add-Member -NotePropertyName Activa -NotePropertyValue $(if ($n.Tipo -eq 'rclone') { $true } else { NubeActiva $n.Proveedor }) -Force; [pscustomobject]@{ Nube = $n; P = (UnidadesParaNube $n $unidades $tam) } })
-    PintarPlan $w.FindName('ListaPlan') (PlanDeCopias $discos $rep $tam) 0 $info $np
-    $w.Cursor = $null
-    $script:discosCache = @(LeerDiscos)
+    # El plan se calcula en segundo plano (lee discos y carpetas y puede medir algunas: con una copia en marcha
+    # eso tarda) y se pinta al terminar. Asi la ventana no se queda colgada.
+    if ($script:calculoPlan) { $script:repetirPlan = $true; return }
+    if (-not $w.FindName('ListaPlan').Children.Count) { CargandoPlan $w "Calculando el plan..." "Leyendo tus discos y carpetas." }
+    $ps = [powershell]::Create()
+    [void]$ps.AddScript({
+        param($config)
+        . $config
+        $discos = @(LeerDiscos)
+        $rep = if ($discos) { AsignarNuevas } else { LeerReparto }
+        $con = @(DiscosConectados)
+        $info = @(foreach ($d in $discos) {
+            $c = $con | Where-Object { $_.Id -eq $d.Id } | Select-Object -First 1
+            $ult = if ($d.UltimaCopia) { "última copia $($d.UltimaCopia.Substring(0, 10))" } else { "sin copias aún" }
+            [pscustomobject]@{ Id = $d.Id; Detalle = "$(if ($c) { "conectado en $($c.Letra)" } else { 'no conectado' })  $([char]0x00B7)  $ult" }
+        })
+        $unidades = @(UnidadesActuales); $tam = TamanosDe $unidades
+        $np = @(foreach ($n in @(LeerNubes | Where-Object { NubeDisponible $_ })) { $n | Add-Member -NotePropertyName Activa -NotePropertyValue $(if ($n.Tipo -eq 'rclone') { $true } else { NubeActiva $n.Proveedor }) -Force; [pscustomobject]@{ Nube = $n; P = (UnidadesParaNube $n $unidades $tam) } })
+        [pscustomobject]@{ Plan = (PlanDeCopias $discos $rep $tam); Info = $info; Np = $np }
+    }.ToString()); [void]$ps.AddArgument((Join-Path $Codigo "config.ps1"))
+    $script:calculoPlan = @{ PS = $ps; H = $ps.BeginInvoke(); Win = $w }
+    $tm = New-Object Windows.Threading.DispatcherTimer; $tm.Interval = [TimeSpan]::FromMilliseconds(300)
+    $tm.add_Tick({ param($s, $e)
+        $c = $script:calculoPlan; if (-not $c -or -not $c.H.IsCompleted) { return }
+        $s.Stop(); $r = $null
+        try { $r = @($c.PS.EndInvoke($c.H))[0] } catch {}
+        $c.PS.Dispose(); $script:calculoPlan = $null
+        $w = $c.Win
+        if ($r -and (VentanaAbierta $w)) { PintarPlan $w.FindName('ListaPlan') $r.Plan 0 @($r.Info) @($r.Np) }
+        elseif (-not $r -and (VentanaAbierta $w)) { CargandoPlan $w "No se pudo calcular el plan" "Vuelve a entrar en Inicio dentro de un momento." }
+        $script:discosCache = @(LeerDiscos)
+        if ($script:repetirPlan) { $script:repetirPlan = $false; if (VentanaAbierta $w) { RellenarPlan $w } }
+    })
+    $tm.Start()
 }
 function CambiarTamanoCompra([int64]$tam) {
     # Al elegir 1 o 2 TB, las carpetas que no caben en un disco de ese tamano se dividen por sus subcarpetas.
@@ -578,10 +592,7 @@ function CambiarTamanoCompra([int64]$tam) {
     GuardarAjuste 'TamanoDiscoNuevo' $tam
     $w = $script:ventanaPrincipal
     if ($tam -le 0) { RellenarPlan $w; return }
-    $l = $w.FindName('ListaPlan'); $l.Children.Clear()
-    $p = New-Object Windows.Controls.ProgressBar; $p.Height = 4; $p.IsIndeterminate = $true; $p.BorderThickness = 0; $p.Margin = '0,12,0,0'
-    Recurso $p ([Windows.Controls.ProgressBar]::ForegroundProperty) 'Acento'; Recurso $p ([Windows.Controls.ProgressBar]::BackgroundProperty) 'Barra'
-    [void]$l.Children.Add((Tarjeta (Apilar @((Texto "Preparando el plan para discos de $(TamComercial $tam)..." 15 'SemiBold'), (Texto "Divido las carpetas que no caben en un disco de ese tamaño y mido sus subcarpetas. Con carpetas muy grandes puede tardar unos minutos." 12 'Normal' 'Texto2'), $p))))
+    CargandoPlan $w "Preparando el plan para discos de $(TamComercial $tam)..." "Divido las carpetas que no caben en un disco de ese tamaño y mido sus subcarpetas. Con carpetas muy grandes puede tardar unos minutos."
     $ps = [powershell]::Create()
     [void]$ps.AddScript({ param($config) . $config; [void](DividirSegunAjuste) }.ToString()); [void]$ps.AddArgument((Join-Path $Codigo "config.ps1"))
     $script:division = @{ PS = $ps; H = $ps.BeginInvoke() }
@@ -589,11 +600,10 @@ function CambiarTamanoCompra([int64]$tam) {
     $tm.add_Tick({ param($s, $e)
         if (-not $script:division.H.IsCompleted) { return }
         $s.Stop(); try { [void]$script:division.PS.EndInvoke($script:division.H) } catch {}; $script:division.PS.Dispose(); $script:division = $null
-        if ($script:ventanaPrincipal -and $script:ventanaPrincipal.IsVisible) { RellenarPlan $script:ventanaPrincipal }
+        if ($script:ventanaPrincipal -and (VentanaAbierta $script:ventanaPrincipal)) { RellenarPlan $script:ventanaPrincipal }
     })
     $tm.Start()
-}
-$miPlan.add_Click({ MostrarPlan })
+}$miPlan.add_Click({ MostrarPlan })
 $miEditar.add_Click({ MostrarEditorPlan 'AsistenteTerminado' })
 
 # ---------- Asistente ----------
@@ -670,7 +680,7 @@ function Revisar {
     # a4) Avisos de optimizacion: una revision rapida al dia (15 min despues de arrancar). Se avisa si el disco del
     #     sistema tiene menos del 10 % libre, o si hay 5 GB o mas que liberar (como mucho una vez por semana).
     if ($script:revisandoEspacio) {
-        if (-not $script:busquedaOpt -and -not ($script:opt -and $script:opt.Win.IsVisible)) { $script:revisandoEspacio = $false }
+        if (-not $script:busquedaOpt -and -not ($script:opt -and (VentanaAbierta $script:opt.Win))) { $script:revisandoEspacio = $false }
         $r = ResultadoOportunidades
         if ($null -ne $r) {
             $script:revisandoEspacio = $false
@@ -760,6 +770,7 @@ $FicheroAbrir = Join-Path $Datos "abrir.senal"
 if (Test-Path -LiteralPath $FicheroAbrir) { Remove-Item -LiteralPath $FicheroAbrir -Force }
 $timerAbrir = New-Object Windows.Forms.Timer; $timerAbrir.Interval = 500
 $timerAbrir.add_Tick({
+    RevisarActividad
     if (Test-Path -LiteralPath $FicheroAbrir) { Remove-Item -LiteralPath $FicheroAbrir -Force -ErrorAction SilentlyContinue; AbrirVentanaPrincipal }
     # Al terminar una copia, «Elegir qué borrar del PC» abre Explorar discos en tus carpetas
     $fx = Join-Path $Datos "explorar.senal"

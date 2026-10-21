@@ -296,9 +296,26 @@ function NuevaVentana($xaml) {
     return $w
 }
 function MostrarSinBloquear($w) {
+    # En el icono (principal.ps1 cargado) todas las pantallas se muestran dentro de la ventana principal
+    if ((Get-Command MostrarVista -ErrorAction SilentlyContinue) -and -not ($script:Principal -and $w -eq $script:Principal.Win)) { MostrarVista $w; return }
+    MostrarVentanaReal $w
+}
+function MostrarVentanaReal($w) {
     # Ventana WPF dentro del bucle de mensajes de WinForms (icono de la bandeja): necesita esto para el teclado
     [Windows.Forms.Integration.ElementHost]::EnableModelessKeyboardInterop($w)
     $w.Show(); [void]$w.Activate()
+}
+function VentanaAbierta($w) {
+    # Una pantalla esta abierta si se ve como ventana o si esta dentro de la ventana principal
+    if (-not $w) { return $false }
+    if ($w.IsVisible) { return $true }
+    return [bool]($script:Principal -and @($script:Principal.Vistas.Values | Where-Object { $_.Win -eq $w }).Count)
+}
+function DuenoVisible($d) {
+    # Un dialogo necesita como dueno una ventana que se vea: las pantallas de dentro de la principal no se ven por si solas
+    if ($d -and $d.IsVisible) { return $d }
+    if ($script:Principal -and $script:Principal.Win.IsVisible) { return $script:Principal.Win }
+    return $null
 }
 $VentanaBase = 'xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Background="{DynamicResource Fondo}" Foreground="{DynamicResource Texto}" FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="13" UseLayoutRounding="True" TextOptions.TextFormattingMode="Display"'
 
@@ -410,6 +427,7 @@ function Dialogo($dueno, $titulo, $texto, $botones = @('Aceptar'), $primario = $
         $script:EntradaDialogo = $conEntrada; return $r
     }
     $w = NuevaVentana "<Window $VentanaBase Title=""BackupApp"" SizeToContent=""Height"" Width=""460"" ResizeMode=""NoResize"" WindowStartupLocation=""CenterOwner"" ShowInTaskbar=""False""><StackPanel Margin=""24,22,24,20""><TextBlock x:Name=""T"" FontSize=""18"" FontWeight=""SemiBold"" TextWrapping=""Wrap""/><TextBlock x:Name=""X"" Margin=""0,10,0,0"" TextWrapping=""Wrap"" Foreground=""{DynamicResource Texto2}""/><TextBox x:Name=""E"" Margin=""0,14,0,0"" Visibility=""Collapsed""/><StackPanel x:Name=""B"" Orientation=""Horizontal"" HorizontalAlignment=""Right"" Margin=""0,22,0,0""/></StackPanel></Window>"
+    $dueno = DuenoVisible $dueno
     if ($dueno) { try { $w.Owner = $dueno } catch { $w.WindowStartupLocation = 'CenterScreen' } } else { $w.WindowStartupLocation = 'CenterScreen'; $w.Topmost = $true }
     $w.FindName('T').Text = $titulo; $w.FindName('X').Text = $texto
     $e = $w.FindName('E'); if ($null -ne $conEntrada) { $e.Visibility = 'Visible'; $e.Text = $conEntrada; $e.SelectAll(); [void]$e.Focus() }

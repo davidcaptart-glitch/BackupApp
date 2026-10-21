@@ -1,5 +1,12 @@
 # Cambios
 
+## 0.6.0
+- Una sola ventana para todo: menú a la izquierda (Inicio, Copia, Editar el plan, Liberar espacio, Explorar discos, Tamaños, Asistente) y la pantalla elegida a la derecha. Ya no se abren ventanas sueltas.
+- La copia se ve dentro de la ventana, en «Copia»: qué está copiando, porcentaje, velocidad, tiempo que falta y Detener. Al terminar se queda el resultado, con «Elegir qué borrar del PC» y «Ver el registro». Abajo en el menú siempre ves lo que se está haciendo.
+- Las preguntas de la copia (por ejemplo, si un disco se queda pequeño) se contestan en la ventana principal.
+- Más estable: la ventana trabaja con prioridad normal (antes, con el PC ocupado, se congelaba), el plan se calcula en segundo plano y los errores inesperados se guardan en logs\errores.log en vez de sacar el cuadro de error de .NET que dejaba el programa parado.
+- Arreglado: las opciones del menú del escudo podían salir vacías (el nombre de la función chocaba con un alias de PowerShell).
+
 ## 0.5.8
 - Explorar discos marca las carpetas y subcarpetas (a cualquier profundidad) que ya están copiadas en un disco conectado: «Copiada en «Disco»».
 - «Borrar del PC (ya están copiadas)»: borra solo las subcarpetas que elijas y deja la carpeta que las contiene. No se vuelven a copiar: se comprueba que la copia es idéntica (y se pone al día si hace falta), se aparta en _ARCHIVO para que la próxima copia no la quite y después se borra del PC.

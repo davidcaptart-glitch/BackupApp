@@ -206,7 +206,7 @@ $XamlLiberar = @"
 </Window>
 "@
 function MostrarLiberarEspacio([switch]$Modal) {
-    if ($script:opt -and $script:opt.Win -and $script:opt.Win.IsVisible) { [void]$script:opt.Win.Activate(); return }
+    if ($script:opt -and (VentanaAbierta $script:opt.Win)) { MostrarSinBloquear $script:opt.Win; return }
     $w = NuevaVentana $XamlLiberar
     $script:opt = @{ Win = $w; Items = @(); Checks = @{}; Marcado = @{}; Timer = $null; Busq = $null; Letras = @(LetrasPorDefecto); Visto = -1 }
     PintarUnidades

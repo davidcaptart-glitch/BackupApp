@@ -433,7 +433,7 @@ function PintarComoConectar {
 </Window>
 "@
 function MostrarConectarDirecta($tipo = 'drive') {
-    $w = NuevaVentana $XamlDirecta; $w.Owner = $script:asis.Win
+    $w = NuevaVentana $XamlDirecta; $d0 = DuenoVisible $script:asis.Win; if ($d0) { $w.Owner = $d0 } else { $w.WindowStartupLocation = 'CenterScreen' }
     $script:dir = @{ Win = $w; Servicio = ($ServiciosRclone | Where-Object { $_.Tipo -eq $tipo } | Select-Object -First 1); Cajas = @{}; Paso = $null; Ps = $null; H = $null; Proc = $null; Nombre = $null; Timer = $null }
     foreach ($s in $ServiciosRclone) {
         $rb = New-Object Windows.Controls.RadioButton; $rb.Style = $script:Estilos['Pastilla']; $rb.Content = $s.Nombre; $rb.GroupName = 'srv'; $rb.Tag = $s.Tipo
@@ -756,7 +756,7 @@ function GuardarPlanAsis {
 
 # ---------- Ventana ----------
 $XamlAsistente = @"
-<Window $VentanaBase Title="BackupApp" Width="1080" Height="720" MinWidth="900" MinHeight="580" WindowStartupLocation="CenterScreen">
+<Window $VentanaBase Title="Asistente" Width="1080" Height="720" MinWidth="900" MinHeight="580" WindowStartupLocation="CenterScreen">
   <Grid>
     <Grid.ColumnDefinitions><ColumnDefinition Width="250"/><ColumnDefinition/></Grid.ColumnDefinitions>
     <Border Background="{DynamicResource Lateral}" BorderBrush="{DynamicResource Borde}" BorderThickness="0,0,1,0">
@@ -861,7 +861,7 @@ function Siguiente {
     }
 }
 function MostrarAsistente($alTerminar = $null, [switch]$Modal) {
-    if ($script:asis -and $script:asis.Win -and $script:asis.Win.IsVisible) { [void]$script:asis.Win.Activate(); return }
+    if ($script:asis -and (VentanaAbierta $script:asis.Win)) { MostrarSinBloquear $script:asis.Win; return }
     $a = @{ Carpetas = [ordered]@{}; Tam = (LeerTamUnidades); Total = @{}; Decision = @{}; Paso = 0; Plan = $null; Guardado = $false
             Cola = (New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'); Medidor = $null; ProgMed = $null; Encolado = @{}
             Alta = (New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'); Baja = (New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]')

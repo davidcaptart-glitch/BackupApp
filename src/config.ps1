@@ -41,6 +41,10 @@ $CarpetaRclone   = Join-Path $Datos "rclone"              # nube directa: rclone
 $RcloneExe       = Join-Path $CarpetaRclone "rclone.exe"
 $RcloneConf      = Join-Path $CarpetaRclone "rclone.conf"
 
+# Los calculos en segundo plano (runspaces de la ventana: medir, buscar que liberar, el plan) cargan este archivo en
+# un hilo propio, que no es el de la ventana (STA): ese hilo va con prioridad baja para que la ventana responda siempre
+if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') { try { [Threading.Thread]::CurrentThread.Priority = 'BelowNormal' } catch {} }
+
 $Version = "0.0.0"
 foreach ($v in @((Join-Path $Codigo "VERSION"), (Join-Path (Split-Path $Codigo -Parent) "VERSION"))) {
     if (Test-Path -LiteralPath $v) { $Version = (Get-Content -LiteralPath $v -TotalCount 1).Trim(); break }
@@ -198,6 +202,47 @@ function CopiaEnDisco($ruta, $discos = $null, $rep = $null) {
     if (Test-Path -LiteralPath $dst) { return [pscustomobject]@{ Disco = $d; Ruta = $dst } }
     return $null
 }
+# ---------- Errores inesperados ----------
+# Un fallo dentro de una pantalla o de un temporizador no debe sacar el cuadro de error de .NET (que deja el programa
+# parado hasta que se pulsa Continuar): se apunta en logs\errores.log y el programa sigue.
+function RegistrarError($donde, $err) {
+    try {
+        $er = if ($err -is [Management.Automation.ErrorRecord]) { $err } elseif ($err.ErrorRecord) { $err.ErrorRecord } elseif ($err.InnerException -and $err.InnerException.ErrorRecord) { $err.InnerException.ErrorRecord } else { $null }
+        $msg = if ($er) { "$($er.Exception.Message)`r`n   en $($er.InvocationInfo.ScriptName):$($er.InvocationInfo.ScriptLineNumber): $("$($er.InvocationInfo.Line)".Trim())`r`n$($er.ScriptStackTrace)" } else { "$err" }
+        New-Item -ItemType Directory -Path $CarpetaLogs -Force | Out-Null
+        Add-Content -LiteralPath (Join-Path $CarpetaLogs "errores.log") "$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss')) [$donde] $msg`r`n" -Encoding UTF8
+    } catch {}
+}
+function CapturarErrores($donde) {
+    # Para los procesos con ventanas (icono, copia): sin cuadros de error, todo al registro
+    try { [Windows.Forms.Application]::SetUnhandledExceptionMode([Windows.Forms.UnhandledExceptionMode]::CatchException) } catch {}
+    [Windows.Forms.Application]::add_ThreadException({ param($s, $e) RegistrarError "$script:dondeErrores" $e.Exception })
+    [Windows.Threading.Dispatcher]::CurrentDispatcher.add_UnhandledException({ param($s, $e) RegistrarError "$script:dondeErrores" $e.Exception; $e.Handled = $true })
+    $script:dondeErrores = $donde
+}
+
+# ---------- Comunicacion entre la copia (otro proceso) y la ventana principal ----------
+# La copia no abre ventana propia si el icono esta abierto: cuenta lo que hace en copia_estado.json, pregunta por
+# pregunta.json (la ventana principal contesta en respuesta.json) y se detiene si aparece detener.senal.
+# El icono escribe bandeja.vivo cada pocos segundos para que la copia sepa que alguien la esta mirando.
+$FicheroEstadoCopia = Join-Path $Datos "copia_estado.json"
+$FicheroPregunta = Join-Path $Datos "pregunta.json"
+$FicheroRespuesta = Join-Path $Datos "respuesta.json"
+$FicheroDetener = Join-Path $Datos "detener.senal"
+$FicheroLatido = Join-Path $Datos "bandeja.vivo"
+function BandejaViva {
+    if (-not (Test-Path -LiteralPath $FicheroLatido)) { return $false }
+    if (((Get-Date) - (Get-Item -LiteralPath $FicheroLatido).LastWriteTime).TotalSeconds -gt 60) { return $false }
+    $p = 0; [void][int]::TryParse("$(Get-Content -LiteralPath $FicheroLatido -ErrorAction SilentlyContinue)".Trim(), [ref]$p)
+    return [bool]($p -and (Get-Process -Id $p -ErrorAction SilentlyContinue))
+}
+function EscribirJson($fichero, $obj) {
+    # Escritura atomica: el otro proceso nunca lee un archivo a medias
+    $tmp = "$fichero.tmp"
+    try { [IO.File]::WriteAllText($tmp, ($obj | ConvertTo-Json -Depth 5), (New-Object Text.UTF8Encoding($false))); Move-Item -LiteralPath $tmp -Destination $fichero -Force } catch {}
+}
+function LeerJson($fichero) { try { if (Test-Path -LiteralPath $fichero) { return ([IO.File]::ReadAllText($fichero) | ConvertFrom-Json) } } catch {}; return $null }
+
 function UnidadDeRuta($ruta) {
     # A que unidad pertenece un archivo o carpeta que ha cambiado ($null si no esta en el plan)
     $lp = ListasPlan; $divididas = $lp.Div; $excluidas = $lp.Exc
