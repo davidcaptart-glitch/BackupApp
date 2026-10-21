@@ -1,5 +1,8 @@
 # Cambios
 
+## 0.6.3
+- Liberar espacio: en «Ya copiado», cada carpeta tiene «Elegir subcarpetas». Abre esa carpeta en Explorar discos para borrar del PC solo las subcarpetas que quieras (ya copiadas, sin volver a copiarlas) y quedarte con el resto.
+
 ## 0.6.2
 - Liberar espacio ya no se queda clavado en el 30 %: ya no recorre todas tus carpetas buscando node_modules y previas de Lightroom (con decenas de miles de carpetas tardaba muchísimo). Las apunta la medición diaria de tamaños, que ya lee todas las carpetas del plan, y Liberar espacio usa esa lista al momento.
 

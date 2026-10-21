@@ -297,8 +297,15 @@ function PintarOportunidades($items) {
             $ver = New-Object Windows.Controls.Button; $ver.Style = $script:Estilos['Enlace']; $ver.Content = "Ver"; $ver.Tag = $k; $ver.Margin = '0,0,16,0'
             $ver.add_Click({ param($s, $e) VerOportunidad $script:opt.Items[$s.Tag] })
         }
+        $sub = $null
+        if ($it.Tipo -eq 'copiado') {
+            # Para quedarse con la carpeta y borrar solo algunas de sus subcarpetas: se abre en Explorar discos, que
+            # marca las ya copiadas y las borra del PC sin volver a copiarlas
+            $sub = New-Object Windows.Controls.Button; $sub.Style = $script:Estilos['Enlace']; $sub.Content = "Elegir subcarpetas"; $sub.Tag = $it.Rutas[0]; $sub.Margin = '0,0,16,0'
+            $sub.add_Click({ param($s, $e) MostrarExplorador $s.Tag })
+        }
         $tam = Texto (TamTxt $it.Bytes) 15 'SemiBold'; $tam.TextWrapping = 'NoWrap'
-        [void]$l.Children.Add((Tarjeta (Fila @($chk, $info, $ver, $tam) @('Auto', '*', 'Auto', 'Auto'))))
+        [void]$l.Children.Add((Tarjeta (Fila @($chk, $info, $sub, $ver, $tam) @('Auto', '*', 'Auto', 'Auto', 'Auto'))))
     }
     if ($buscando) {
         # Sigue buscando: lo encontrado ya se puede marcar y liberar
