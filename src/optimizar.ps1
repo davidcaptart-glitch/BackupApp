@@ -27,24 +27,43 @@ function Oportunidad($id, $titulo, $detalle, $rutas, $seguro, $bytes = $null, $t
     if ($null -eq $bytes) { $bytes = BytesDe $rutas }
     [pscustomobject]@{ Id = $id; Titulo = $titulo; Detalle = $detalle; Rutas = $rutas; Bytes = [int64]$bytes; Seguro = $seguro; Tipo = $tipo }
 }
-function BuscarCarpetasConNombre($raices, $patron, $prof = 6) {
-    # Carpetas cuyo nombre encaja con $patron dentro de $raices (sin entrar en ellas ni en las que se saltan)
-    $pila = New-Object System.Collections.Stack
-    foreach ($r in $raices) { if ($r -and (Test-Path -LiteralPath $r)) { $pila.Push(@((New-Object IO.DirectoryInfo $r), 0)) } }
-    $vistas = 0
-    while ($pila.Count) {
-        $d, $n = $pila.Pop()
-        $vistas++; if ($script:estadoBusq -and $vistas % 500 -eq 0) { $script:estadoBusq.Paso = "Buscando carpetas que se regeneran (node_modules, previas de Lightroom): {0:N0} carpetas revisadas..." -f $vistas }
-        try {
-            foreach ($s in $d.EnumerateDirectories()) {
-                if ($s.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
-                if ($s.Name -match $patron) { $s; continue }
-                if ($n -lt $prof -and $s.Name -notmatch '^(\.git|\$Recycle\.Bin|Windows|AppData)$') { $pila.Push(@($s, ($n + 1))) }
+# Recorrido de carpetas en C# (un bucle de PowerShell tardaba muchisimo en discos con decenas de miles de carpetas).
+# Devuelve las carpetas cuyo nombre encaja con el patron, sin entrar en ellas ni en las que se saltan.
+# $contador[0] cuenta las carpetas revisadas: la ventana lo lee para que se vea que avanza.
+if (-not ('BackupApp.Buscador' -as [type])) {
+    Add-Type -TypeDefinition @"
+using System; using System.IO; using System.Collections.Generic; using System.Text.RegularExpressions;
+namespace BackupApp {
+    public static class Buscador {
+        public static string[] Buscar(string[] raices, string patron, int prof, string saltar, long[] contador) {
+            var re = new Regex(patron, RegexOptions.IgnoreCase); var sal = new Regex(saltar, RegexOptions.IgnoreCase);
+            var res = new List<string>(); var pila = new Stack<KeyValuePair<string, int>>();
+            foreach (var r in raices) { if (Directory.Exists(r)) pila.Push(new KeyValuePair<string, int>(r, 0)); }
+            while (pila.Count > 0) {
+                var p = pila.Pop();
+                try {
+                    foreach (var d in new DirectoryInfo(p.Key).EnumerateDirectories()) {
+                        contador[0]++;
+                        if ((d.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+                        if (re.IsMatch(d.Name)) { res.Add(d.FullName); continue; }
+                        if (p.Value < prof && !sal.IsMatch(d.Name)) pila.Push(new KeyValuePair<string, int>(d.FullName, p.Value + 1));
+                    }
+                } catch { }
             }
-        } catch {}
+            return res.ToArray();
+        }
     }
 }
-
+"@
+}
+function BuscarCarpetasConNombre($raices, $patron, $prof = 6) {
+    $cont = New-Object 'long[]' 1
+    if ($script:estadoBusq) { $script:estadoBusq.Contador = $cont }
+    $r = [BackupApp.Buscador]::Buscar([string[]]@($raices | Where-Object { $_ -and (Test-Path -LiteralPath $_) }), $patron, $prof, '^(\.git|\$Recycle\.Bin|Windows|AppData)$', $cont)
+    if ($script:estadoBusq) { $script:estadoBusq.Contador = $null }
+    foreach ($p in $r) { New-Object IO.DirectoryInfo $p }
+}
+$FicheroRegenerables = Join-Path $Datos "regenerables.json"   # lo encontrado se recuerda un dia: no hay que recorrerlo todo cada vez
 function LetrasPorDefecto {
     # Discos que se miran al liberar espacio: los fijos, menos los de backup (salvo que el usuario los marque)
     $backup = @(DiscosConectados | ForEach-Object { $_.Letra.ToUpper() })
@@ -126,10 +145,17 @@ function BuscarOportunidades($letras = $null, $estado = $null) {
     # 5) Carpetas que se regeneran, dentro de las carpetas del backup y de Imagenes
     PasoBusqueda "Buscando carpetas que se regeneran (node_modules, previas de Lightroom)..." 0.30
     $raices = @(@($Carpetas | ForEach-Object { $_.Origen }) + @([Environment]::GetFolderPath('MyPictures')) | Where-Object { EnLetras $_ } | Select-Object -Unique)
-    $nm = @(BuscarCarpetasConNombre $raices '^node_modules$' | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-90) })
+    $clave = ($raices -join '|').ToLower()
+    $cache = LeerJson $FicheroRegenerables
+    if ($cache -and $cache.Clave -eq $clave -and ((Get-Date) - [datetime]$cache.Fecha).TotalHours -lt 24) {
+        $todas = @(@($cache.Rutas) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | ForEach-Object { New-Object IO.DirectoryInfo $_ })
+    } else {
+        $todas = @(BuscarCarpetasConNombre $raices '^(node_modules|.*Previews\.lrdata)$')
+        EscribirJson $FicheroRegenerables ([pscustomobject]@{ Clave = $clave; Fecha = (Get-Date).ToString('o'); Rutas = @($todas | ForEach-Object { $_.FullName }) })
+    }
+    $nm = @($todas | Where-Object { $_.Name -eq 'node_modules' -and $_.LastWriteTime -lt (Get-Date).AddDays(-90) })
     if ($nm) { Anadir((Oportunidad 'node_modules' "node_modules de proyectos parados" "$($nm.Count) carpetas de proyectos sin tocar en 3 meses. Se recuperan con «npm install»." ($nm | ForEach-Object { $_.FullName }) $false)) }
-    PasoBusqueda "Buscando previas de Lightroom..." 0.38
-    $lr = @(BuscarCarpetasConNombre $raices 'Previews\.lrdata$' | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-90) })
+    $lr = @($todas | Where-Object { $_.Name -match 'Previews\.lrdata$' -and $_.LastWriteTime -lt (Get-Date).AddDays(-90) })
     if ($lr) { Anadir((Oportunidad 'lightroom' "Previas de Lightroom antiguas" "$($lr.Count) catálogos sin abrir en 3 meses. Lightroom las vuelve a crear al abrir el catálogo." ($lr | ForEach-Object { $_.FullName }) $false)) }
     # 6) Subcarpetas que ya tienen una copia al dia en un disco de backup (sin cambios desde la ultima copia)
     $discos = @(LeerDiscos); $rep = LeerReparto; $unid = @(UnidadesActuales); $tam = TamanosDe $unid
@@ -245,7 +271,15 @@ function RevisarBusquedaVentana {
         $o.Items = @($e.Items.ToArray() | Sort-Object { $_.Tipo -eq 'copiado' }, { -$_.Bytes })
         PintarOportunidades $o.Items
     } elseif ($o.Progreso) {
-        $o.Progreso.Value = $e.Frac; $o.PasoTxt.Text = $e.Paso; $o.PctTxt.Text = "{0:N0} %" -f [math]::Floor($e.Frac * 100)
+        $fr = [double]$e.Frac; $paso = $e.Paso
+        $cont = $e.Contador
+        if ($cont) {
+            # No se sabe cuantas carpetas hay: el porcentaje se acerca al siguiente paso segun las revisadas
+            $n = [double]$cont[0]
+            $fr = 0.30 + 0.15 * (1 - [math]::Exp(-$n / 40000))
+            $paso = "Buscando carpetas que se regeneran (node_modules, previas de Lightroom): {0:N0} carpetas revisadas..." -f $n
+        }
+        $o.Progreso.Value = $fr; $o.PasoTxt.Text = $paso; $o.PctTxt.Text = "{0:N0} %" -f [math]::Floor($fr * 100)
     }
     if ($e.Fin) {
         $o.Timer.Stop()

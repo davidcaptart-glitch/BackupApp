@@ -1,5 +1,9 @@
 # Cambios
 
+## 0.6.1
+- Liberar espacio ya no parece parado en el 30 %: mientras busca carpetas que se regeneran (node_modules, previas de Lightroom) se ve cuántas carpetas lleva revisadas y el porcentaje avanza.
+- Esa búsqueda se hace de una sola pasada (antes eran dos) y lo encontrado se recuerda un día, así que al volver a abrir Liberar espacio es inmediato.
+
 ## 0.6.0
 - Una sola ventana para todo: menú a la izquierda (Inicio, Copia, Editar el plan, Liberar espacio, Explorar discos, Tamaños, Asistente) y la pantalla elegida a la derecha. Ya no se abren ventanas sueltas.
 - La copia se ve dentro de la ventana, en «Copia»: qué está copiando, porcentaje, velocidad, tiempo que falta y Detener. Al terminar se queda el resultado, con «Elegir qué borrar del PC» y «Ver el registro». Abajo en el menú siempre ves lo que se está haciendo.
