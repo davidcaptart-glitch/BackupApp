@@ -527,7 +527,7 @@ $XamlPlan = @"
 "@
 function EstadoPrincipal($w) {
     $w.FindName('Estado').Text = if (Copiando) { "Hay una copia en marcha. Mientras tanto puedes liberar espacio o explorar los discos." } else { (TextoEstado) -replace "`r?`n", "  $([char]0x00B7)  " }
-    $b = $w.FindName('BtnCopiar'); $b.IsEnabled = -not (Copiando); $b.Content = if (Copiando) { "Copiando..." } else { "Hacer copia ahora" }
+    $b = $w.FindName('BtnCopiar'); $b.Content = if (Copiando) { "Ver la copia" } else { "Hacer copia ahora" }
 }
 function MostrarPlan {
     # Una sola ventana principal: si ya esta abierta, se trae al frente
@@ -535,7 +535,11 @@ function MostrarPlan {
     $w = NuevaVentana $XamlPlan
     $script:ventanaPrincipal = $w
     $w.FindName('BtnCerrar').add_Click({ param($s, $e) [Windows.Window]::GetWindow($s).Close() })
-    $w.FindName('BtnCopiar').add_Click({ param($s, $e) LanzarCopia; EstadoPrincipal ([Windows.Window]::GetWindow($s)) })
+    $w.FindName('BtnCopiar').add_Click({ param($s, $e)
+        # Con una copia en marcha, el boton trae su ventana al frente (la copia corre en otro proceso: se le avisa con una senal)
+        if (Copiando) { Set-Content -LiteralPath (Join-Path $Datos "ver_copia.senal") 'ver' -ErrorAction SilentlyContinue } else { LanzarCopia }
+        EstadoPrincipal ([Windows.Window]::GetWindow($s))
+    })
     $w.FindName('BtnAsis').add_Click({ param($s, $e) [Windows.Window]::GetWindow($s).Close(); AbrirAsistente })
     $w.FindName('BtnEditar').add_Click({ param($s, $e) [Windows.Window]::GetWindow($s).Close(); MostrarEditorPlan 'AsistenteTerminado' })
     $w.FindName('BtnLiberar').add_Click({ MostrarLiberarEspacio })

@@ -68,10 +68,17 @@ function BuscarOportunidades($letras = $null, $estado = $null) {
     # 1) Papelera (solo la de los discos elegidos)
     PasoBusqueda "Mirando la papelera..." 0.02
     try {
-        $pap = (New-Object -ComObject Shell.Application).NameSpace(10); $b = [int64]0; $n = 0; $ls = @{}
-        foreach ($it in $pap.Items()) {
-            $p = "$($it.Path)"; if (-not (EnLetras $p)) { continue }
-            $b += [int64]$it.ExtendedProperty("Size"); $n++; $ls[$p.Substring(0, 2).ToUpper()] = $true
+        # SHQueryRecycleBin da el tamano de la papelera de cada disco al momento (recorrerla elemento a elemento tardaba casi un minuto)
+        if (-not ('BackupApp.Papelera' -as [type])) {
+            Add-Type -Namespace BackupApp -Name Papelera -MemberDefinition @'
+[StructLayout(LayoutKind.Sequential)] public struct Info { public int cbSize; public long Bytes; public long Elementos; }
+[DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern int SHQueryRecycleBin(string raiz, ref Info info);
+'@
+        }
+        $b = [int64]0; $n = 0; $ls = @{}
+        foreach ($l in $script:letrasBusq) {
+            $i = New-Object BackupApp.Papelera+Info; $i.cbSize = [Runtime.InteropServices.Marshal]::SizeOf($i)
+            if ([BackupApp.Papelera]::SHQueryRecycleBin("$l\", [ref]$i) -eq 0 -and $i.Elementos -gt 0) { $b += $i.Bytes; $n += $i.Elementos; $ls[$l] = $true }
         }
         if ($b -gt 10MB) {
             $x = Oportunidad 'papelera' "Vaciar la papelera" "$n elementos que ya borraste ($(@($ls.Keys | Sort-Object) -join ', ')). Al vaciarla no se pueden recuperar." @() $true $b 'papelera'

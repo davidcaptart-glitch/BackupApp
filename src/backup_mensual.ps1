@@ -69,7 +69,19 @@ function Progreso($titulo, $detalle, [double]$fraccion, $cuenta = '') {
     Bombear
 }
 function CerrarProgreso { if ($script:prog) { $script:cerrandoProgreso = $true; $script:prog.Close(); $script:prog = $null } }
-function Bombear { [Windows.Forms.Application]::DoEvents() }
+function Bombear {
+    [Windows.Forms.Application]::DoEvents()
+    # «Ver la copia» en la ventana principal: se trae la ventana al frente, centrada en la pantalla principal
+    # (minimizada o en otro monitor no se encontraba)
+    $sv = Join-Path $Datos "ver_copia.senal"
+    if ($script:prog -and (Test-Path -LiteralPath $sv)) {
+        Remove-Item -LiteralPath $sv -Force -ErrorAction SilentlyContinue
+        $w = $script:prog; $w.WindowState = 'Normal'
+        $a = [Windows.SystemParameters]::WorkArea
+        $w.Left = $a.Left + ($a.Width - $w.ActualWidth) / 2; $w.Top = $a.Top + ($a.Height - $w.ActualHeight) / 2
+        $w.Topmost = $true; [void]$w.Activate(); $w.Topmost = $false
+    }
+}
 
 # ---------- Progreso por GB: se lee el registro de robocopy (/BYTES) mientras copia ----------
 $script:copia = $null

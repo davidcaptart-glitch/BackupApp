@@ -1,5 +1,9 @@
 # Cambios
 
+## 0.5.6
+- Con una copia en marcha, el botón de la ventana principal pasa a ser «Ver la copia» y trae su ventana al frente, centrada, aunque estuviera minimizada o en otro monitor.
+- Liberar espacio lee la papelera al momento (antes, con muchos elementos, se quedaba casi un minuto en «Mirando la papelera»).
+
 ## 0.5.5
 - Nuevo en el plan: «Discos que vas a comprar: El que convenga / 1 TB / 2 TB». Si vas a ir comprando discos pequeños, el plan te dice cuántos necesitas y qué se copiará en cada uno, empezando por lo imprescindible.
 - Las carpetas que no caben en un disco de ese tamaño se dividen solas por sus subcarpetas (tantos niveles como haga falta). Lo que ya está en un disco no se toca.
