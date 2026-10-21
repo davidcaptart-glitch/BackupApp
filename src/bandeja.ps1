@@ -24,6 +24,7 @@ Add-Type -AssemblyName System.Windows.Forms, System.Drawing, Microsoft.VisualBas
 . (Join-Path $PSScriptRoot "asistente.ps1")
 . (Join-Path $PSScriptRoot "actualizar.ps1")
 . (Join-Path $PSScriptRoot "optimizar.ps1")
+. (Join-Path $PSScriptRoot "explorador.ps1")
 [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'Idle'
 
 $ScriptBackup = Join-Path $PSScriptRoot "backup_mensual.ps1"
@@ -130,6 +131,7 @@ $miTam    = MI "Tamano de las carpetas..."
 $miPlan   = MI "Plan de copias..."
 $miAsis   = MI "Asistente de configuracion..."
 $miLiberar = MI "Liberar espacio..."
+$miExplorar = MI "Explorar discos..."
 $miAnadir = MI "Anadir carpeta..."
 $miQuitar = MI "Quitar carpeta"
 $miLogs   = MI "Abrir registros"
@@ -137,7 +139,7 @@ $miActual = MI "Buscar actualizaciones..."
 $miAutoAct = MI "Buscar actualizaciones automáticamente"; $miAutoAct.CheckOnClick = $true
 $miSalir  = MI "Salir"
 [void]$miDiscos.DropDownItems.Add("(cargando)"); [void]$miQuitar.DropDownItems.Add("(cargando)")
-[void]$menu.Items.AddRange(@($miVersion, $miEstado,(SEP), $miCopiar, $miDiscos, $miPlan, $miTam, $miLiberar, (SEP), $miAsis, $miAnadir, $miQuitar, (SEP), $miActual, $miAutoAct, $miLogs, $miSalir))
+[void]$menu.Items.AddRange(@($miVersion, $miEstado,(SEP), $miCopiar, $miDiscos, $miPlan, $miTam, $miLiberar, $miExplorar, (SEP), $miAsis, $miAnadir, $miQuitar, (SEP), $miActual, $miAutoAct, $miLogs, $miSalir))
 $icono.ContextMenuStrip = $menu
 
 $miCopiar.add_Click({ LanzarCopia })
@@ -535,6 +537,7 @@ function AsistenteTerminado {
 }
 $miAsis.add_Click({ AbrirAsistente })
 $miLiberar.add_Click({ MostrarLiberarEspacio })
+$miExplorar.add_Click({ MostrarExplorador })
 $script:revisandoEspacio = $false
 
 # ---------- Actualizaciones ----------

@@ -1,5 +1,11 @@
 # Cambios
 
+## 0.4.9
+- Si detienes una copia (o se apaga el PC), al volver a lanzarla continúa donde se quedó: se salta las carpetas que ya terminó.
+- Nueva ventana «Explorar discos» (menú del escudo y «Liberar espacio»): recorre cualquier disco viendo qué ocupa cada carpeta y elige tú qué hacer, sin depender del plan de copias.
+- «Copiar a un disco de backup y borrar del PC»: copia lo que marques a _ARCHIVO del disco que elijas, comprueba que la copia es idéntica y solo entonces lo borra del PC.
+- «Borrar»: a la papelera o definitivamente, avisando si es algo de tu plan de copias o la única copia archivada.
+
 ## 0.4.8
 - Arreglado: si había una copia en marcha, la actualización no se podía instalar porque la ventana de la copia tenía abierto el icono.
 

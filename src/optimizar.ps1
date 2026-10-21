@@ -147,7 +147,10 @@ $XamlLiberar = @"
           <RadioButton x:Name="ModoPapelera" Style="{DynamicResource Pastilla}" GroupName="Modo" Content="Enviar a la papelera" IsChecked="True"/>
           <RadioButton x:Name="ModoBorrar" Style="{DynamicResource Pastilla}" GroupName="Modo" Content="Borrar definitivamente"/>
         </StackPanel>
-        <Button x:Name="BtnWindows" Content="Más opciones en la configuración de Windows" Style="{DynamicResource Enlace}" HorizontalAlignment="Left" Margin="12,8,0,0"/>
+        <StackPanel Orientation="Horizontal" Margin="12,8,0,0">
+          <Button x:Name="BtnExplorar" Content="Explorar los discos y elegir yo qué borrar" Style="{DynamicResource Enlace}" Margin="0,0,18,0"/>
+          <Button x:Name="BtnWindows" Content="Más opciones en la configuración de Windows" Style="{DynamicResource Enlace}"/>
+        </StackPanel>
       </StackPanel>
       <StackPanel Grid.Column="1" Orientation="Horizontal">
         <Button x:Name="BtnCerrar" Content="Cerrar" Margin="0,0,8,0"/>
@@ -165,6 +168,7 @@ function MostrarLiberarEspacio([switch]$Modal) {
     PintarBuscando
     $w.FindName('BtnCerrar').add_Click({ $script:opt.Win.Close() })
     $w.FindName('BtnWindows').add_Click({ Start-Process 'ms-settings:storagesense' })
+    $w.FindName('BtnExplorar').add_Click({ if (Get-Command MostrarExplorador -ErrorAction SilentlyContinue) { MostrarExplorador } })
     $w.FindName('BtnLiberar').add_Click({ LiberarSeleccion })
     $w.add_Closed({ $o = $script:opt; if ($o.Timer) { $o.Timer.Stop() } })
     BuscarOportunidadesEnSegundoPlano

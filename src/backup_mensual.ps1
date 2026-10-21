@@ -10,7 +10,7 @@
 #  Muestra una ventana de progreso con "Detener"; lo copiado se conserva y la siguiente copia sigue donde se quedo.
 # ============================================================
 
-param([switch]$DesdeBandeja, [switch]$SoloNube)
+param([switch]$DesdeBandeja, [switch]$SoloNube, [string]$Archivar)   # -Archivar <lista.json>: copiar a _ARCHIVO y borrar del PC (Explorar discos)
 
 . (Join-Path $PSScriptRoot "config.ps1")
 . (Join-Path $PSScriptRoot "ui.ps1")
@@ -173,6 +173,74 @@ function ElegirCarpetasALiberar($candidatas, $disco) {
     return $script:lib.Elegidas
 }
 
+# ---------- Recordar por donde iba una copia interrumpida ----------
+$FicheroCopiaEnCurso = Join-Path $Datos "copia_en_curso.json"
+function LeerCopiaEnCurso($idDisco) {
+    # Subcarpetas ya terminadas en una copia a este disco que se interrumpio hace menos de 7 dias
+    $h = @{}
+    if (Test-Path -LiteralPath $FicheroCopiaEnCurso) {
+        try {
+            $j = [IO.File]::ReadAllText($FicheroCopiaEnCurso) | ConvertFrom-Json
+            if ($j.Disco -eq $idDisco -and ((Get-Date) - [datetime]$j.Inicio).TotalDays -lt 7) { foreach ($k in $j.Hechas) { $h[$k] = $true } }
+        } catch {}
+    }
+    return $h
+}
+function GuardarCopiaEnCurso($idDisco, $hechas) {
+    $inicio = Get-Date -Format "yyyy-MM-ddTHH:mm:ss"
+    if (Test-Path -LiteralPath $FicheroCopiaEnCurso) { try { $j = [IO.File]::ReadAllText($FicheroCopiaEnCurso) | ConvertFrom-Json; if ($j.Disco -eq $idDisco) { $inicio = $j.Inicio } } catch {} }
+    try { [IO.File]::WriteAllText($FicheroCopiaEnCurso, ([pscustomobject]@{ Disco = $idDisco; Inicio = $inicio; Hechas = @($hechas.Keys) } | ConvertTo-Json)) } catch {}
+}
+function BorrarCopiaEnCurso { Remove-Item -LiteralPath $FicheroCopiaEnCurso -Force -ErrorAction SilentlyContinue }
+
+# ---------- Archivar: lo que el usuario elige en "Explorar discos" ----------
+# Se copia a <disco>\BACKUP\_ARCHIVO (sin /MIR: nunca se borra nada del archivo), se comprueba que no falta nada
+# y solo entonces se borra del PC. Se apunta en _ARCHIVO\indice_archivo.csv.
+function ArchivarLista {
+    $j = [IO.File]::ReadAllText($Archivar) | ConvertFrom-Json
+    Remove-Item -LiteralPath $Archivar -Force -ErrorAction SilentlyContinue
+    $disco = DiscosConectados | Where-Object { $_.Id -eq $j.Disco } | Select-Object -First 1
+    if (-not $disco) { [void](Aviso "Conecta el disco de backup" "El disco elegido ya no está conectado. No se ha borrado nada."); return }
+    $items = @($j.Items)
+    AbrirProgreso
+    Progreso "Copiando a «$($disco.Nombre)» y borrando del PC" "Preparando..." 0
+    EmpezarProgresoCopia ([int64](($items | ForEach-Object { [int64]$_.Bytes } | Measure-Object -Sum).Sum))
+    $hechos = @(); $fallos = @(); $n = 0
+    $indice = Join-Path $disco.Raiz "_ARCHIVO\indice_archivo.csv"
+    foreach ($it in $items) {
+        if ($script:detener) { break }
+        $n++; $ruta = $it.Ruta.TrimEnd('\')
+        if (-not (Test-Path -LiteralPath $ruta)) { $fallos += "$ruta (ya no existe)"; continue }
+        $esDir = Test-Path -LiteralPath $ruta -PathType Container
+        $dst = Join-Path $disco.Raiz (Join-Path "_ARCHIVO" (DestinoDe $ruta))
+        $script:unidadActual = "$(Split-Path $ruta -Leaf)  ($n de $($items.Count))"
+        if ($esDir) {
+            $c = Robo @($ruta, $dst, '/E', '/FFT', '/XJ', '/R:1', '/W:2', (Hilos $ruta $disco.Raiz), '/BYTES', '/NP', '/NDL', "/LOG+:$Log")
+            $v = if ($c -lt 8 -and -not $script:detener) { Robo @($ruta, $dst, '/E', '/L', '/FFT', '/XJ', '/R:0', '/W:0', '/NJH', '/NJS', '/NFL', '/NDL') } else { 16 }
+        } else {
+            $c = Robo @((Split-Path $ruta -Parent), (Split-Path $dst -Parent), (Split-Path $ruta -Leaf), '/FFT', '/R:1', '/W:2', '/BYTES', '/NP', '/NDL', "/LOG+:$Log")
+            $v = if ($c -lt 8 -and -not $script:detener) { Robo @((Split-Path $ruta -Parent), (Split-Path $dst -Parent), (Split-Path $ruta -Leaf), '/L', '/FFT', '/R:0', '/W:0', '/NJH', '/NJS', '/NFL', '/NDL') } else { 16 }
+        }
+        $script:copia.Hecho += [int64]$it.Bytes; $script:copia.Actual = 0
+        if ($script:detener) { break }
+        # Comprobacion: el codigo 1 (o mas de 8) significa que aun faltaria copiar algo; entonces no se borra
+        if ($c -ge 8 -or ($v -band 1) -or $v -ge 8) { $fallos += "$ruta (la copia no se pudo completar o no coincide: no se ha borrado)"; continue }
+        try { Remove-Item -LiteralPath $ruta -Recurse -Force -ErrorAction Stop }
+        catch { $fallos += "$ruta (copiada, pero no se pudo borrar del PC: ¿algún archivo abierto?)"; continue }
+        $hechos += $it
+        $rep = LeerReparto; foreach ($k in @($rep.Keys)) { if (DentroDe $k $ruta) { [void]$rep.Remove($k) } }; GuardarReparto $rep
+        [pscustomobject]@{ Fecha = (Get-Date -Format "yyyy-MM-dd"); Original = $ruta; Guardado_en = $dst; GB = [math]::Round([int64]$it.Bytes / 1GB, 2) } |
+            Export-Csv -Path $indice -Append -NoTypeInformation -Encoding UTF8 -Delimiter ';'
+    }
+    $script:copia = $null
+    CerrarProgreso
+    $txt = "Copiados a «$($disco.Nombre)» y borrados del PC: $($hechos.Count) de $($items.Count) ($(GB (($hechos | ForEach-Object { [int64]$_.Bytes } | Measure-Object -Sum).Sum)) liberados).`n`nEstán en $($disco.Letra)\$CarpetaBackup\_ARCHIVO."
+    if ($script:detener) { $txt += "`n`nLo detuviste: lo que faltaba sigue en tu PC sin tocar." }
+    if ($fallos) { $txt += "`n`nNo se borraron:`n" + (($fallos | ForEach-Object { "$([char]0x2022) $_" }) -join "`n") }
+    [void](Aviso $(if ($fallos) { "Terminado con avisos" } else { "Terminado" }) $txt)
+}
+if ($Archivar) { ArchivarLista; exit }
+
 # 1) Hay carpetas y discos registrados?
 if (-not $Carpetas) {
     [void](Aviso "Todavía no hay nada que copiar" "Aún no has elegido qué carpetas copiar. Haz clic derecho en el escudo > Asistente de configuración.")
@@ -227,11 +295,15 @@ foreach ($disco in $conectados) {
     }
 
     # 6) Copia diferencial de cada unidad (con progreso por GB, velocidad y tiempo que falta)
+    # Si una copia anterior a este disco se interrumpio, se saltan las subcarpetas que ya termino (copia_en_curso.json)
+    $hechas = LeerCopiaEnCurso $disco.Id
     $errores = @(); $n = 0
     EmpezarProgresoCopia ([int64]$previsto)
+    if ($hechas.Count) { Progreso "Continuando la copia en «$($disco.Nombre)»" "Se quedó a medias: $($hechas.Count) de $($unidades.Count) carpetas ya estaban copiadas" 0 }
     foreach ($u in $unidades) {
         if ($script:detener) { break }
         $n++
+        if ($hechas.ContainsKey($u.Clave)) { $script:copia.Hecho += [int64]$tam[$u.Clave]; continue }
         $script:unidadActual = "$($u.Carpeta.Origen | Split-Path -Leaf)  $([char]0x203A)  $($u.Nombre)  ($n de $($unidades.Count))"
         Progreso $null $script:unidadActual $(if ($script:copia.Total -gt 0) { $script:copia.Hecho / $script:copia.Total } else { ($n - 1) / [math]::Max(1, $unidades.Count) }) (TextoProgresoCopia)
         if ($u.Tipo -eq 'carpeta') {
@@ -247,10 +319,14 @@ foreach ($disco in $conectados) {
                 Where-Object { -not (Test-Path -LiteralPath (Join-Path $u.Carpeta.Origen $_.Name)) } |
                 Remove-Item -Force -ErrorAction SilentlyContinue
         }
-        # Unidad terminada: cuenta entera (en las copias siguientes solo se copia lo que ha cambiado)
+        if ($script:detener) { break }   # a medias: no cuenta como hecha
+        # Unidad terminada: cuenta entera (en las copias siguientes solo se copia lo que ha cambiado) y se apunta
         $script:copia.Hecho += [math]::Max([int64]$tam[$u.Clave], $script:copia.Actual); $script:copia.Actual = 0; $script:copia.Archivo = ''
+        if ($c -lt 8) { $hechas[$u.Clave] = $true; GuardarCopiaEnCurso $disco.Id $hechas }
+        if ($env:BACKUPAPP_PRUEBA_PARAR -and $hechas.Count -ge [int]$env:BACKUPAPP_PRUEBA_PARAR) { $script:detener = $true }   # pruebas: simula pulsar Detener
     }
     $script:copia = $null
+    if (-not $script:detener) { BorrarCopiaEnCurso }   # copia completa: la proxima empieza de cero
     if ($script:detener) { $resumen += "$($disco.Nombre): copia detenida en la carpeta $n de $($unidades.Count). Lo copiado se conserva."; break }
 
     # 7) Espejo: borrar del disco las carpetas que ya no existen en el origen
