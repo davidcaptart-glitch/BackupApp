@@ -759,7 +759,12 @@ function AbrirVentanaPrincipal { if (-not $Carpetas) { AbrirAsistente } else { M
 $FicheroAbrir = Join-Path $Datos "abrir.senal"
 if (Test-Path -LiteralPath $FicheroAbrir) { Remove-Item -LiteralPath $FicheroAbrir -Force }
 $timerAbrir = New-Object Windows.Forms.Timer; $timerAbrir.Interval = 500
-$timerAbrir.add_Tick({ if (Test-Path -LiteralPath $FicheroAbrir) { Remove-Item -LiteralPath $FicheroAbrir -Force -ErrorAction SilentlyContinue; AbrirVentanaPrincipal } })
+$timerAbrir.add_Tick({
+    if (Test-Path -LiteralPath $FicheroAbrir) { Remove-Item -LiteralPath $FicheroAbrir -Force -ErrorAction SilentlyContinue; AbrirVentanaPrincipal }
+    # Al terminar una copia, «Elegir qué borrar del PC» abre Explorar discos en tus carpetas
+    $fx = Join-Path $Datos "explorar.senal"
+    if (Test-Path -LiteralPath $fx) { $r = (Get-Content -LiteralPath $fx -Raw -ErrorAction SilentlyContinue).Trim(); Remove-Item -LiteralPath $fx -Force -ErrorAction SilentlyContinue; MostrarExplorador $(if ($r -and (Test-Path -LiteralPath $r)) { $r } else { $null }) }
+})
 $timerAbrir.Start()
 # Al abrirlo el usuario se muestra la ventana; al arrancar Windows solo el escudo (salvo la primera vez, sin nada configurado)
 if (-not $Carpetas) { $script:ultimoRecordatorio = Get-Date; AbrirAsistente }

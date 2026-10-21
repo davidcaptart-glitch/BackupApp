@@ -1,5 +1,10 @@
 # Cambios
 
+## 0.5.8
+- Explorar discos marca las carpetas y subcarpetas (a cualquier profundidad) que ya están copiadas en un disco conectado: «Copiada en «Disco»».
+- «Borrar del PC (ya están copiadas)»: borra solo las subcarpetas que elijas y deja la carpeta que las contiene. No se vuelven a copiar: se comprueba que la copia es idéntica (y se pone al día si hace falta), se aparta en _ARCHIVO para que la próxima copia no la quite y después se borra del PC.
+- Al terminar una copia, «Elegir qué borrar del PC» abre Explorar discos en tus carpetas.
+
 ## 0.5.7
 - Arreglado: con una copia en marcha, al pulsar BackupApp en la barra de tareas o en el menú Inicio salía la ventana de la copia en vez de la ventana principal. Ahora la copia tiene su propio botón en la barra de tareas.
 

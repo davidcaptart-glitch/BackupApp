@@ -183,6 +183,21 @@ function ListasPlan {
     if ($script:listasPlan.Marca -ne $m) { $script:listasPlan = @{ Marca = $m; Div = (LeerLista $FicheroDivididas); Exc = (LeerLista $FicheroExcluidas) } }
     return $script:listasPlan
 }
+function CopiaEnDisco($ruta, $discos = $null, $rep = $null) {
+    # Si una carpeta de tu PC (o una subcarpeta suya, a cualquier profundidad) ya tiene copia en un disco de backup
+    # conectado, devuelve ese disco y la ruta de la copia. Sirve para borrar del PC lo ya copiado sin volver a copiarlo.
+    $u = UnidadDeRuta $ruta
+    if (-not $u -or $u.EndsWith('\*')) { return $null }
+    if ($null -eq $rep) { $rep = LeerReparto }
+    $id = $rep[$u]; if (-not $id -or (EsperaAlgo $id)) { return $null }
+    if ($null -eq $discos) { $discos = @(DiscosConectados) }
+    $d = $discos | Where-Object { $_.Id -eq $id } | Select-Object -First 1; if (-not $d) { return $null }
+    $c = $Carpetas | Where-Object { $ruta.StartsWith($_.Origen.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1
+    if (-not $c) { return $null }
+    $dst = Join-Path $d.Raiz (Join-Path $c.Destino (RelDe $c $ruta))
+    if (Test-Path -LiteralPath $dst) { return [pscustomobject]@{ Disco = $d; Ruta = $dst } }
+    return $null
+}
 function UnidadDeRuta($ruta) {
     # A que unidad pertenece un archivo o carpeta que ha cambiado ($null si no esta en el plan)
     $lp = ListasPlan; $divididas = $lp.Div; $excluidas = $lp.Exc

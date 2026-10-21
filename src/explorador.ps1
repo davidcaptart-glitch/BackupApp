@@ -47,7 +47,7 @@ function MostrarExplorador($ruta = $null) {
     $w.FindName('BtnArchivar').add_Click({ ArchivarSeleccionExp })
     $script:exp.Timer = New-Object Windows.Threading.DispatcherTimer; $script:exp.Timer.Interval = [TimeSpan]::FromMilliseconds(400)
     $script:exp.Timer.add_Tick({ TickExplorador })
-    $w.add_Closed({ $e = $script:exp; $e.Timer.Stop(); $e.Estado.Gen++; if ($e.Medidor) { try { $e.Medidor.PS.Stop(); $e.Medidor.PS.Dispose() } catch {} } })
+    $w.add_Closed({ $e = $script:exp; $e.Timer.Stop(); $e.Estado.Gen++; if ($e.Medidor) { try { [void]$e.Medidor.PS.BeginStop($null, $null) } catch {} } })   # sin esperar: una medicion grande podia dejar el icono colgado
     PintarUnidadesExp
     MostrarSinBloquear $w
     $script:exp.Timer.Start()
@@ -85,6 +85,8 @@ function IrA($ruta) {
     $e = $script:exp; $w = $e.Win
     if (-not (Test-Path -LiteralPath $ruta)) { return }
     $e.Ruta = $ruta; $e.Estado.Gen++; $e.Sel = @{}
+    # Para saber que subcarpetas ya tienen copia en un disco conectado (se lee una vez por carpeta)
+    $e.Discos = @(DiscosConectados); $e.Rep = LeerReparto; $e.Copias = @{}
     $w.FindName('Ruta').Text = $ruta
     $w.FindName('BtnSubir').IsEnabled = [bool](Split-Path $ruta -Parent)
     $lista = $w.FindName('Lista'); $lista.Children.Clear()
@@ -119,7 +121,11 @@ function PintarFilasExp {
         $est = EstadoRuta $f.Ruta
         $chips = New-Object Windows.Controls.WrapPanel
         switch ($est[0]) {
-            'plan'    { [void]$chips.Children.Add((Chip "En tu plan de copias" 'acento')) }
+            'plan'    {
+                if ($f.Dir -and -not $e.Copias.ContainsKey($f.Ruta)) { $e.Copias[$f.Ruta] = CopiaEnDisco $f.Ruta $e.Discos $e.Rep }
+                $cp = $e.Copias[$f.Ruta]
+                if ($cp) { [void]$chips.Children.Add((Chip "Copiada en «$($cp.Disco.Nombre)»" 'acento')) } else { [void]$chips.Children.Add((Chip "En tu plan de copias" 'normal')) }
+            }
             'backup'  { [void]$chips.Children.Add((Chip "Copia de backup" 'normal')) }
             'archivo' { [void]$chips.Children.Add((Chip "Archivado: es la única copia" 'aviso')) }
         }
@@ -180,6 +186,9 @@ function ActualizarSeleccionExp {
     $w.FindName('BtnBorrar').IsEnabled = [bool]$sel
     $enBackup = @($sel | Where-Object { (EstadoRuta $_.Ruta)[0] -in 'backup', 'archivo', 'discobackup' })
     $w.FindName('BtnArchivar').IsEnabled = [bool]$sel -and -not $enBackup -and -not $sinMedir -and -not $e.Proc
+    # Si todo lo marcado ya esta copiado, no hace falta volver a copiarlo: solo se comprueba y se borra del PC
+    $copiadas = @($sel | Where-Object { $e.Copias -and $e.Copias[$_.Ruta] })
+    $w.FindName('BtnArchivar').Content = if ($sel -and $copiadas.Count -eq $sel.Count) { "Borrar del PC (ya están copiadas)" } else { "Copiar a un disco de backup y borrar del PC" }
 }
 
 # ---------- Copiar a un disco de backup y borrar del PC ----------
@@ -190,21 +199,28 @@ function ArchivarSeleccionExp {
     $letras = @($sel | ForEach-Object { $_.Ruta.Substring(0, 2).ToUpper() } | Select-Object -Unique)
     $discos = @(DiscosConectados | Where-Object { $letras -notcontains $_.Letra.ToUpper() })
     if (-not $discos) { [void](Dialogo $w "Conecta un disco de backup" "Para copiar y borrar hace falta un disco de backup conectado (distinto del disco donde están estas carpetas)."); return }
+    # Lo que ya tiene copia va a su disco: no se vuelve a copiar, solo se comprueba y se aparta en _ARCHIVO
+    $conCopia = @($sel | Where-Object { $e.Copias[$_.Ruta] })
+    $discosCopia = @($conCopia | ForEach-Object { $e.Copias[$_.Ruta].Disco.Id } | Select-Object -Unique)
+    if ($discosCopia.Count -gt 1) { [void](Dialogo $w "Están en discos distintos" "Lo que has marcado está copiado en varios discos de backup. Márcalo por separado, un disco cada vez."); return }
     $d = $discos[0]
-    if ($discos.Count -gt 1) {
+    if ($discosCopia.Count -eq 1) { $d = $discos | Where-Object { $_.Id -eq $discosCopia[0] } | Select-Object -First 1 }
+    elseif ($discos.Count -gt 1) {
         $r = Dialogo $w "¿A qué disco?" "Elige el disco de backup donde se guardarán:" (@('Cancelar') + @($discos | ForEach-Object { "$($_.Nombre) ($(TamTxt ([int64]$_.Libre)) libres)" }))
         $d = $discos | Where-Object { $r -like "$($_.Nombre) (*" } | Select-Object -First 1
         if (-not $d) { return }
     }
-    if ([int64]$d.Libre -lt $bytes * 1.02) { [void](Dialogo $w "No cabe" "Has marcado $(TamTxt $bytes), pero en «$($d.Nombre)» solo quedan $(TamTxt ([int64]$d.Libre)) libres."); return }
+    $nuevos = [int64](($sel | Where-Object { -not $e.Copias[$_.Ruta] } | ForEach-Object { [int64]$e.Estado.Tam[$_.Ruta] } | Measure-Object -Sum).Sum)
+    if ([int64]$d.Libre -lt $nuevos * 1.02) { [void](Dialogo $w "No cabe" "Hay que copiar $(TamTxt $nuevos), pero en «$($d.Nombre)» solo quedan $(TamTxt ([int64]$d.Libre)) libres."); return }
     $plan = @($sel | Where-Object { (EstadoRuta $_.Ruta)[0] -eq 'plan' })
-    $msg = "Se copiarán a «$($d.Nombre)» ($($d.Letra)\$CarpetaBackup\_ARCHIVO), se comprobará que la copia es idéntica y después se borrarán de tu PC. Ganas $(TamTxt $bytes).`n`n" +
+    $msg = $(if ($conCopia.Count -eq $sel.Count) { "Ya están copiadas en «$($d.Nombre)». Se comprobará que su copia es idéntica (si ha cambiado algo, se actualiza), se guardará aparte en $($d.Letra)\$CarpetaBackup\_ARCHIVO para que la próxima copia no la quite, y después se borrarán de tu PC. Ganas $(TamTxt $bytes).`n`n" }
+             else { "Se copiarán a «$($d.Nombre)» ($($d.Letra)\$CarpetaBackup\_ARCHIVO), se comprobará que la copia es idéntica y después se borrarán de tu PC. Ganas $(TamTxt $bytes).`n`n" }) +
            (($sel | Select-Object -First 12 | ForEach-Object { "$([char]0x2022) $($_.Ruta)" }) -join "`n") + $(if ($sel.Count -gt 12) { "`n... y $($sel.Count - 12) más" } else { "" }) +
            "`n`nDespués solo estarán en ese disco: guárdalo bien."
     if ($plan) { $msg += "`n`nAlgunas están en tu plan de copias: dejarán de copiarse porque ya no estarán en el PC." }
     if ((Dialogo $w "¿Copiar y borrar del PC?" $msg @('Cancelar', 'Copiar y borrar') 'Copiar y borrar') -ne 'Copiar y borrar') { return }
     $lista = Join-Path $Datos "archivar.json"
-    [pscustomobject]@{ Disco = $d.Id; Items = @($sel | ForEach-Object { [pscustomobject]@{ Ruta = $_.Ruta; Bytes = [int64]$e.Estado.Tam[$_.Ruta] } }) } | ConvertTo-Json -Depth 4 |
+    [pscustomobject]@{ Disco = $d.Id; Items = @($sel | ForEach-Object { [pscustomobject]@{ Ruta = $_.Ruta; Bytes = [int64]$e.Estado.Tam[$_.Ruta]; Copia = $(if ($e.Copias[$_.Ruta]) { $e.Copias[$_.Ruta].Ruta } else { '' }) } }) } | ConvertTo-Json -Depth 4 |
         Set-Content -LiteralPath $lista -Encoding UTF8
     $e.Proc = Start-Process powershell.exe -PassThru -ArgumentList "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$(Join-Path $Codigo 'backup_mensual.ps1')`" -Archivar `"$lista`""
     $e.Sel = @{}; foreach ($f in $e.Filas) { $f.Check.IsChecked = $false }; ActualizarSeleccionExp

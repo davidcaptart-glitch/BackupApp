@@ -275,6 +275,28 @@ function ArchivarLista {
         $esDir = Test-Path -LiteralPath $ruta -PathType Container
         $dst = Join-Path $disco.Raiz (Join-Path "_ARCHIVO" (DestinoDe $ruta))
         $script:unidadActual = "$(Split-Path $ruta -Leaf)  ($n de $($items.Count))"
+        $copiaPlan = "$($it.Copia)"
+        if ($esDir -and $copiaPlan -and (Test-Path -LiteralPath $copiaPlan) -and $copiaPlan.StartsWith($disco.Raiz, [StringComparison]::OrdinalIgnoreCase)) {
+            # Ya copiada por el plan: se pone al dia (solo lo que haya cambiado), se comprueba y se aparta en _ARCHIVO
+            # moviendola dentro del mismo disco (no se copia otra vez). Asi la proxima copia no la quita.
+            $c = Robo @($ruta, $copiaPlan, '/E', '/FFT', '/XJ', '/R:1', '/W:2', (Hilos $ruta $disco.Raiz), '/BYTES', '/NP', '/NDL', "/LOG+:$Log")
+            $v = if ($c -lt 8 -and -not $script:detener) { Robo @($ruta, $copiaPlan, '/E', '/L', '/FFT', '/XJ', '/R:0', '/W:0', '/NJH', '/NJS', '/NFL', '/NDL') } else { 16 }
+            $script:copia.Hecho += [int64]$it.Bytes; $script:copia.Actual = 0
+            if ($script:detener) { break }
+            if ($c -ge 8 -or ($v -band 1) -or $v -ge 8) { $fallos += "$ruta (la copia no coincide: no se ha borrado)"; continue }
+            try {
+                New-Item -ItemType Directory -Path (Split-Path $dst -Parent) -Force | Out-Null
+                if (Test-Path -LiteralPath $dst) { $dst += "_" + (Get-Date -Format "yyyyMMdd_HHmm") }
+                Move-Item -LiteralPath $copiaPlan -Destination $dst -ErrorAction Stop
+            } catch { $fallos += "$ruta (no se pudo apartar su copia en _ARCHIVO: no se ha borrado)"; continue }
+            try { Remove-Item -LiteralPath $ruta -Recurse -Force -ErrorAction Stop }
+            catch { $fallos += "$ruta (su copia está en _ARCHIVO, pero no se pudo borrar del PC: ¿algún archivo abierto?)"; continue }
+            $hechos += $it
+            $rep = LeerReparto; foreach ($k in @($rep.Keys)) { if (DentroDe $k $ruta) { [void]$rep.Remove($k) } }; GuardarReparto $rep
+            [pscustomobject]@{ Fecha = (Get-Date -Format "yyyy-MM-dd"); Original = $ruta; Guardado_en = $dst; GB = [math]::Round([int64]$it.Bytes / 1GB, 2) } |
+                Export-Csv -Path $indice -Append -NoTypeInformation -Encoding UTF8 -Delimiter ';'
+            continue
+        }
         if ($esDir) {
             $c = Robo @($ruta, $dst, '/E', '/FFT', '/XJ', '/R:1', '/W:2', (Hilos $ruta $disco.Raiz), '/BYTES', '/NP', '/NDL', "/LOG+:$Log")
             $v = if ($c -lt 8 -and -not $script:detener) { Robo @($ruta, $dst, '/E', '/L', '/FFT', '/XJ', '/R:0', '/W:0', '/NJH', '/NJS', '/NFL', '/NDL') } else { 16 }
@@ -556,4 +578,11 @@ $txt = ($resumen -join "`n")
 if ($faltan -and -not $script:detener) { $txt += "`n`nTodavía toca copiar: " + ($faltan -join ", ") + ". Conéctalo cuando puedas." }
 if ($conectados) { $txt += "`n`nAntes de desconectar los discos, usa «Expulsar» en el Explorador." }
 $tit = if ($script:detener) { "Copia detenida" } elseif ($hayError) { "Copia terminada con errores" } else { "Copia terminada" }
-[void](Aviso $tit $txt)
+if ($conectados -and $Carpetas) {
+    # Con la copia hecha, se puede elegir que subcarpetas borrar del PC: el icono abre Explorar discos en tus carpetas
+    $txt += "`n`nSi quieres hacer sitio en tu PC, puedes elegir qué subcarpetas ya copiadas borrar (sin volver a copiarlas)."
+    if ((Aviso $tit $txt @('Cerrar', 'Elegir qué borrar del PC') 'Elegir qué borrar del PC') -eq 'Elegir qué borrar del PC') {
+        $ini = if ($Carpetas.Count -eq 1) { $Carpetas[0].Origen } else { Split-Path $Carpetas[0].Origen -Parent }
+        Set-Content -LiteralPath (Join-Path $Datos "explorar.senal") $ini -Encoding UTF8
+    }
+} else { [void](Aviso $tit $txt) }
