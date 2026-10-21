@@ -14,6 +14,9 @@ param([switch]$DesdeBandeja, [switch]$SoloNube, [string]$Archivar)   # -Archivar
 
 . (Join-Path $PSScriptRoot "config.ps1")
 . (Join-Path $PSScriptRoot "ui.ps1")
+# La ventana de la copia va con su propio boton en la barra de tareas: si compartiera el del programa, al pulsar
+# BackupApp Windows mostraria la copia en vez de abrir la ventana principal
+[void][BackupApp.Dwm]::SetCurrentProcessExplicitAppUserModelID("$IdAplicacion.Copia")
 
 function GB($b) { if ([math]::Abs([double]$b) -lt 1GB) { "{0:N0} MB" -f ($b / 1MB) } else { "{0:N1} GB" -f ($b / 1GB) } }
 function Aviso($titulo, $texto, $botones = @('Aceptar'), $primario = $null) { return (Dialogo $null $titulo $texto $botones $primario) }

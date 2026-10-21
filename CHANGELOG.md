@@ -1,5 +1,8 @@
 # Cambios
 
+## 0.5.7
+- Arreglado: con una copia en marcha, al pulsar BackupApp en la barra de tareas o en el menú Inicio salía la ventana de la copia en vez de la ventana principal. Ahora la copia tiene su propio botón en la barra de tareas.
+
 ## 0.5.6
 - Con una copia en marcha, el botón de la ventana principal pasa a ser «Ver la copia» y trae su ventana al frente, centrada, aunque estuviera minimizada o en otro monitor.
 - Liberar espacio lee la papelera al momento (antes, con muchos elementos, se quedaba casi un minuto en «Mirando la papelera»).
