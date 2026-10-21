@@ -45,3 +45,6 @@ foreach ($k in $totales.Keys) {
     $filas += [pscustomobject]@{ Fecha = $hoy; Carpeta = $k; Bytes = $totales[$k][0]; Archivos = $totales[$k][1] }
 }
 $filas | Export-Csv $Historial -Delimiter ';' -NoTypeInformation -Encoding UTF8
+
+# Si compras discos de 1 o 2 TB: las carpetas sin disco que ya no caben en uno se dividen por sus subcarpetas
+[void](DividirSegunAjuste)

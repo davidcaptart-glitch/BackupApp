@@ -581,6 +581,41 @@ function TarjetaPlanNube($np) {
     if ($n.Activa -eq $false) { $x = Texto "$($n.Proveedor) no está abierto: se copiará en su carpeta, pero no se subirá hasta que lo abras e inicies sesión." 12 'SemiBold' 'Aviso'; $x.Margin = '0,6,0,0'; [void]$l.Children.Add($x) }
     return (Tarjeta (Apilar @($cab, $uso, $l)))
 }
+function GrupoUnidad($u) {
+    # Para resumir: la carpeta incluida y, si la unidad esta dentro de una carpeta abierta, esa carpeta
+    $p = Split-Path $u.Rel -Parent
+    "$(Split-Path $u.Carpeta.Origen -Leaf)$(if ($p) { " $([char]0x203A) $($p -replace '\\', " $([char]0x203A) ")" })"
+}
+function TarjetaCompras($compras) {
+    # Plan de compras: un disco de 1 o 2 TB cada vez, con lo que se protegera en cada uno (lo imprescindible primero)
+    $l = New-Object Windows.Controls.StackPanel
+    $n = @($compras.Discos).Count
+    $tit = if ($n) { "Plan de compras: $n $(if ($n -eq 1) { 'disco' } else { 'discos' }) de $(TamComercial $compras.Tamano)" } else { "Los discos de $(TamComercial $compras.Tamano) se quedan pequeños" }
+    $cab = Fila @((Icono $GlifoCompra 22 'Acento'), (Apilar @((Texto $tit 15 'SemiBold'), (Texto "Ve comprándolos cuando quieras: cada uno que conectes se llena con lo siguiente de la lista, empezando por lo imprescindible. Las carpetas que no caben en un disco se dividen solas por sus subcarpetas." 12 'Normal' 'Texto2')))) @('Auto', '*')
+    $cab.Children[1].Margin = '12,0,0,0'; [void]$l.Children.Add($cab)
+    foreach ($d in $compras.Discos) {
+        $grupos = @($d.Unidades | Group-Object { GrupoUnidad $_ } | ForEach-Object {
+            [pscustomobject]@{ Nombre = $_.Name; N = $_.Count; Bytes = [int64](($_.Group | ForEach-Object { [int64]$compras.Tam[$_.Clave] } | Measure-Object -Sum).Sum); Pri = ($_.Group[0].Carpeta.Prioridad) } } |
+            Sort-Object Pri, { -$_.Bytes })
+        $bloque = New-Object Windows.Controls.StackPanel; $bloque.Margin = '34,12,0,0'
+        $f = Fila @((Texto "Disco nuevo $($d.N)" 13.5 'SemiBold'), (Texto "$(TamTxt $d.Bytes) de $(TamTxt $d.Util)" 12 'Normal' 'Texto2')) @('*', 'Auto')
+        [void]$bloque.Children.Add($f)
+        $bu = BarraUso ($d.Bytes / [math]::Max(1.0, [double]$d.Util)); $bu.Margin = '0,6,0,6'; [void]$bloque.Children.Add($bu)
+        foreach ($g in @($grupos | Select-Object -First 6)) {
+            $noms = @($d.Unidades | Where-Object { (GrupoUnidad $_) -eq $g.Nombre } | ForEach-Object { $_.Nombre })
+            $txt = "$($g.Nombre) $([char]0x203A) " + (($noms | Select-Object -First 4) -join ', ') + $(if ($noms.Count -gt 4) { " y $($noms.Count - 4) más" })
+            $tx = Texto $txt 12.5; $tx.TextWrapping = 'Wrap'; $r = Fila @($tx, (Texto (TamTxt $g.Bytes) 12 'Normal' 'Texto2')) @('*', 'Auto'); $r.Margin = '0,2,0,2'; $r.Children[1].Margin = '12,0,0,0'
+            [void]$bloque.Children.Add($r)
+        }
+        if ($grupos.Count -gt 6) { [void]$bloque.Children.Add((Texto "y $($grupos.Count - 6) grupos más" 12 'Normal' 'Texto2')) }
+        [void]$l.Children.Add($bloque)
+    }
+    if ($compras.NoCaben) {
+        $x = Texto "No caben ni en un disco vacío de $(TamComercial $compras.Tamano) ($(TamTxt $compras.BytesNoCaben)), porque no tienen subcarpetas para dividirlas: $((@($compras.NoCaben) | ForEach-Object { $_.Nombre } | Select-Object -First 4) -join ', '). Necesitarán un disco más grande." 12 'Normal' 'Aviso'
+        $x.Margin = '34,12,0,0'; [void]$l.Children.Add($x)
+    }
+    return (Tarjeta $l 'AcentoSuave' 'AcentoSuave')
+}
 function PintarPlan($panel, $plan, $ahorro = 0, $discosInfo = $null, $nubesPlan = @()) {
     # Dibuja un plan (PlanDeCopias) con tarjetas. Lo usan el asistente y la ventana "Plan de copias".
     $panel.Children.Clear()
@@ -627,10 +662,14 @@ function PintarPlan($panel, $plan, $ahorro = 0, $discosInfo = $null, $nubesPlan 
         [void]$panel.Children.Add((Tarjeta $l 'AvisoSuave' 'AvisoSuave'))
     }
     foreach ($np in $nubesPlan) { [void]$panel.Children.Add((TarjetaPlanNube $np)) }
-    $rec = if ($plan.Comprar) { Fila @((Icono $GlifoCompra 22 'Acento'), (Apilar @((Texto "Te conviene un disco externo de $(TamComercial $plan.Comprar)" 15 'SemiBold'), (Texto "Formatéalo en NTFS para que la copia vaya comprimida. Al conectarlo te ofreceré registrarlo." 12 'Normal' 'Texto2')))) @('Auto', '*') }
+    if ($plan.Compras -and ($plan.Compras.Discos -or $plan.Compras.NoCaben)) { [void]$panel.Children.Add((TarjetaCompras $plan.Compras)) }
+    $rec = if ($plan.Compras -and $plan.Compras.Discos) { $null }
+           elseif ($plan.Comprar) { Fila @((Icono $GlifoCompra 22 'Acento'), (Apilar @((Texto "Te conviene un disco externo de $(TamComercial $plan.Comprar)" 15 'SemiBold'), (Texto "Mejor en NTFS (como vienen casi todos). Al conectarlo te ofreceré registrarlo." 12 'Normal' 'Texto2')))) @('Auto', '*') }
            else { Fila @((Icono $GlifoOk 22 'Acento'), (Texto "Tus discos tienen sitio suficiente por ahora." 14 'SemiBold')) @('Auto', '*') }
-    $rec.Children[1].Margin = '12,0,0,0'
-    [void]$panel.Children.Add((Tarjeta $rec 'AcentoSuave' 'AcentoSuave'))
+    if ($rec) {
+        $rec.Children[1].Margin = '12,0,0,0'
+        [void]$panel.Children.Add((Tarjeta $rec 'AcentoSuave' 'AcentoSuave'))
+    }
     $notas = @()
     if ($plan.SinHistorial) { $notas += "Aún no hay historial de tamaños: se reserva un 20 % para el crecimiento de los próximos 2 años." }
     else { $notas += "Tus carpetas crecen unos $(TamTxt $plan.CrecimientoAnual) al año." }

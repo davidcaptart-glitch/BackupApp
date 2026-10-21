@@ -454,6 +454,54 @@ function AsignarNuevas {
     return $rep
 }
 
+# ---------- Discos que el usuario va comprando poco a poco (1 o 2 TB) ----------
+# Ajuste TamanoDiscoNuevo: 0 = el plan recomienda el disco que convenga; 1e12 o 2e12 = el usuario comprara discos de ese tamano.
+function TamanoDiscoNuevo { [int64](LeerAjuste 'TamanoDiscoNuevo' 0) }
+function UtilDiscoNuevo([int64]$tamDisco) { [int64]($tamDisco * 0.999 * (1 - $MargenDisco)) }   # lo que formatea un disco de "1 TB", menos el margen
+function LimiteUnidad([int64]$tamDisco) { [int64]((UtilDiscoNuevo $tamDisco) * 0.9) }            # cada parte deja un 10 % del disco para crecer
+function DividirGrandes([int64]$limite) {
+    # Abre (divididas.txt) las carpetas que aun no tienen disco y no caben en uno del tamano elegido, nivel a nivel,
+    # hasta que cada parte quepa. Las que ya estan en un disco no se tocan (ya caben). Devuelve cuantas se han abierto.
+    if ($limite -le 0) { return 0 }
+    $div = LeerLista $FicheroDivididas; $rep = LeerReparto; $ids = @(LeerDiscos | ForEach-Object { $_.Id })
+    $abiertas = 0; $fijas = @()
+    for ($vuelta = 0; $vuelta -lt 10; $vuelta++) {
+        $unidades = @(UnidadesDe $Carpetas $div)
+        $tam = TamanosDe $unidades
+        # Lo que el usuario dejo esperando a proposito sigue esperando en sus partes
+        foreach ($u in $unidades) { foreach ($p in $fijas) { if (-not $rep.ContainsKey($u.Clave) -and $u.Dir.StartsWith("$p\", [StringComparison]::OrdinalIgnoreCase)) { $rep[$u.Clave] = $EsperaFija } } }
+        $grandes = @($unidades | Where-Object { $_.Tipo -eq 'carpeta' -and [int64]$tam[$_.Clave] -gt $limite -and $ids -notcontains $rep[$_.Clave] -and
+                                                 (Get-ChildItem -LiteralPath $_.Clave -Directory -Force -ErrorAction SilentlyContinue | Select-Object -First 1) })
+        if (-not $grandes) { break }
+        foreach ($u in $grandes) {
+            $div[$u.Clave] = $true; $abiertas++
+            if ($rep[$u.Clave] -eq $EsperaFija) { $fijas += $u.Clave }
+            [void]$rep.Remove($u.Clave)
+        }
+    }
+    if ($abiertas) { GuardarLista $FicheroDivididas $div; GuardarReparto $rep }
+    return $abiertas
+}
+function DividirSegunAjuste { $t = TamanoDiscoNuevo; if ($t -gt 0) { DividirGrandes (LimiteUnidad $t) } else { 0 } }
+function PlanCompras($unidades, $tam, $discos, $rep, [int64]$tamDisco) {
+    # Simula ir comprando discos de $tamDisco uno a uno: que se copiaria en cada uno (lo mas importante primero)
+    # y lo que no cabria ni en un disco vacio (carpetas sin subcarpetas mas grandes que el disco).
+    $sim = @{}; foreach ($k in @($rep.Keys)) { $sim[$k] = $rep[$k] }
+    $sim = Repartir $unidades $tam $discos $sim
+    $util = UtilDiscoNuevo $tamDisco
+    $virt = @(); $compras = @()
+    for ($n = 1; $n -le 20; $n++) {
+        if (-not @($unidades | Where-Object { $sim[$_.Clave] -eq $EnEspera -and [int64]$tam[$_.Clave] -le $util })) { break }
+        $v = [pscustomobject]@{ Id = "NUEVO$n"; Nombre = "Disco nuevo $n"; Capacidad = [int64]($tamDisco * 0.999); Ajeno = 0 }
+        $virt += $v
+        $sim = Repartir $unidades $tam (@($discos) + $virt) $sim
+        $mias = @($unidades | Where-Object { $sim[$_.Clave] -eq $v.Id } | Sort-Object { $_.Carpeta.Prioridad }, { -[int64]$tam[$_.Clave] })
+        $compras += [pscustomobject]@{ N = $n; Util = $util; Bytes = [int64](($mias | ForEach-Object { [int64]$tam[$_.Clave] } | Measure-Object -Sum).Sum); Unidades = $mias }
+    }
+    $noCaben = @($unidades | Where-Object { $sim[$_.Clave] -eq $EnEspera })
+    [pscustomobject]@{ Tamano = $tamDisco; Tam = $tam; Discos = $compras; NoCaben = $noCaben; BytesNoCaben = [int64](($noCaben | ForEach-Object { [int64]$tam[$_.Clave] } | Measure-Object -Sum).Sum) }
+}
+
 # ---------- Resumen del plan (lo que se muestra al usuario) ----------
 # Tamanos en que se venden los discos (en TB decimales, como los anuncian los fabricantes)
 $TamanosComerciales = @(0.5, 1, 2, 4, 5, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24) | ForEach-Object { [int64]($_ * 1e12) }
@@ -511,10 +559,17 @@ function PlanDeCopias($discos, $rep, $tam, $carpetas = $Carpetas) {
     $total = [int64](($porCarpeta | Measure-Object Bytes -Sum).Sum)
     $margen = if ($sinHist) { [int64]($total * 0.2) } else { 2 * $crec }
     $libre = [int64](($porDisco | ForEach-Object { $_.Util - $_.Asignado } | Measure-Object -Sum).Sum)
-    $comprar = $null
-    if ($espera -gt 0 -or $margen -gt $libre) { $comprar = DiscoRecomendado ([math]::Max($espera, 0) + [math]::Max([int64]0, $margen - [math]::Max([int64]0, $libre))) }
+    $comprar = $null; $compras = $null
+    $falta = [math]::Max($espera, 0) + [math]::Max([int64]0, $margen - [math]::Max([int64]0, $libre))
+    if ($espera -gt 0 -or $margen -gt $libre) { $comprar = DiscoRecomendado $falta }
+    # Si el usuario va a comprar discos de un tamano fijo: cuantos y que ira en cada uno
+    $tamNuevo = TamanoDiscoNuevo
+    if ($tamNuevo -gt 0 -and $espera -gt 0) {
+        $compras = PlanCompras $unidades $tam $discos $rep $tamNuevo
+        $comprar = $tamNuevo
+    }
     [pscustomobject]@{ Carpetas = $porCarpeta; Discos = $porDisco; Total = $total; EnEspera = $espera
-                       CrecimientoAnual = $crec; SinHistorial = $sinHist; Comprar = $comprar }
+                       CrecimientoAnual = $crec; SinHistorial = $sinHist; Comprar = $comprar; Compras = $compras; Margen = $margen }
 }
 function TextoPlan($plan) {
     function T($b) { if ([math]::Abs([double]$b) -ge 1TB) { "{0:N2} TB" -f ($b / 1TB) } else { "{0:N1} GB" -f ($b / 1GB) } }
@@ -539,7 +594,11 @@ function TextoPlan($plan) {
     }
     if ($plan.SinHistorial) { $l.Add("Crecimiento: aun no hay historial suficiente; se reserva un 20 % para los proximos 2 anos.") }
     else { $l.Add("Crecimiento medido: $(T $plan.CrecimientoAnual) al ano.") }
-    if ($plan.Comprar) { $l.Add("RECOMENDACION: compra un disco externo de $(TamComercial $plan.Comprar) (NTFS) y registralo.") }
+    if ($plan.Compras -and $plan.Compras.Discos) {
+        $l.Add("PLAN DE COMPRAS: $(@($plan.Compras.Discos).Count) $(if (@($plan.Compras.Discos).Count -eq 1) { 'disco' } else { 'discos' }) de $(TamComercial $plan.Compras.Tamano).")
+        foreach ($c in $plan.Compras.Discos) { $l.Add("   Disco nuevo $($c.N): $(T $c.Bytes) - " + ((@($c.Unidades) | Select-Object -First 4 | ForEach-Object { $_.Nombre }) -join ', ') + $(if (@($c.Unidades).Count -gt 4) { "..." })) }
+    }
+    elseif ($plan.Comprar) { $l.Add("RECOMENDACION: compra un disco externo de $(TamComercial $plan.Comprar) (NTFS) y registralo.") }
     else { $l.Add("Tus discos tienen sitio suficiente por ahora.") }
     return ($l -join "`r`n")
 }

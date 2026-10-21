@@ -388,7 +388,7 @@ function MedicionTerminada {
     $llenos = @(EstadoDiscos | Where-Object { $_.Uso -gt 90 })
     $plan = if ($script:discosCache) { PlanDeCopias $script:discosCache (AsignarNuevas) (LeerTamUnidades) } else { $null }
     if ($plan -and $plan.EnEspera -gt 0) {
-        Avisar "Hay carpetas sin copia" "$(FmtTam $plan.EnEspera) no caben en tus discos y esperan a uno nuevo. Recomendado: un disco de $(TamComercial $plan.Comprar). Haz clic para ver el plan." 'plan'
+        Avisar "Hay carpetas sin copia" "$(FmtTam $plan.EnEspera) no caben en tus discos y esperan a uno nuevo. Recomendado: $(if ($plan.Compras -and $plan.Compras.Discos) { "$(@($plan.Compras.Discos).Count) discos de $(TamComercial $plan.Compras.Tamano)" } else { "un disco de $(TamComercial $plan.Comprar)" }). Haz clic para ver el plan." 'plan'
     } elseif ($llenos) {
         Avisar "Un disco se esta llenando" ((($llenos | ForEach-Object { "$($_.Nombre): {0:N0} %" -f $_.Uso }) -join "`n") + "`nLas carpetas nuevas iran a los discos con mas espacio.") 'tamanos'
     }
@@ -508,7 +508,15 @@ $XamlPlan = @"
       <Button x:Name="BtnAsis" Content="Asistente" Margin="0,0,8,8" MinWidth="150"/>
       <Button x:Name="BtnAct" Content="Buscar actualizaciones" Margin="0,0,8,8" MinWidth="150"/>
     </WrapPanel>
-    <TextBlock Grid.Row="3" Text="Plan de copias" FontSize="18" FontWeight="SemiBold" Margin="0,14,0,10"/>
+    <DockPanel Grid.Row="3" Margin="0,14,0,10">
+      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+        <TextBlock Text="Discos que vas a comprar:" Foreground="{DynamicResource Texto2}" VerticalAlignment="Center" Margin="0,0,6,0"/>
+        <RadioButton x:Name="Compra0" Style="{DynamicResource Pastilla}" GroupName="Compra" Content="El que convenga" Tag="0"/>
+        <RadioButton x:Name="Compra1" Style="{DynamicResource Pastilla}" GroupName="Compra" Content="1 TB" Tag="1000000000000"/>
+        <RadioButton x:Name="Compra2" Style="{DynamicResource Pastilla}" GroupName="Compra" Content="2 TB" Tag="2000000000000"/>
+      </StackPanel>
+      <TextBlock Text="Plan de copias" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center"/>
+    </DockPanel>
     <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"><StackPanel x:Name="ListaPlan"/></ScrollViewer>
     <DockPanel Grid.Row="5" Margin="0,18,0,0">
       <TextBlock DockPanel.Dock="Left" VerticalAlignment="Center" FontSize="11.5" Foreground="{DynamicResource Texto2}" TextWrapping="Wrap" MaxWidth="560" Text="Puedes tener abiertas a la vez la copia, Liberar espacio y Explorar discos. Esta ventana también se abre con clic derecho en el escudo, junto al reloj."/>
@@ -535,8 +543,16 @@ function MostrarPlan {
     $w.FindName('BtnTam').add_Click({ MostrarTamanos })
     $w.FindName('BtnAct').add_Click({ IniciarBusqueda $true })
     EstadoPrincipal $w
-    $w.Cursor = [Windows.Input.Cursors]::Wait
+    $actual = TamanoDiscoNuevo
+    foreach ($n in 'Compra0', 'Compra1', 'Compra2') {
+        $rb = $w.FindName($n); $rb.IsChecked = ([int64]$rb.Tag -eq $actual)
+        $rb.add_Checked({ param($s, $e) CambiarTamanoCompra ([int64]$s.Tag) })
+    }
     MostrarSinBloquear $w
+    RellenarPlan $w
+}
+function RellenarPlan($w) {
+    $w.Cursor = [Windows.Input.Cursors]::Wait
     $discos = @(LeerDiscos)
     $rep = if ($discos) { AsignarNuevas } else { LeerReparto }
     $con = @(DiscosConectados)
@@ -550,6 +566,28 @@ function MostrarPlan {
     PintarPlan $w.FindName('ListaPlan') (PlanDeCopias $discos $rep $tam) 0 $info $np
     $w.Cursor = $null
     $script:discosCache = @(LeerDiscos)
+}
+function CambiarTamanoCompra([int64]$tam) {
+    # Al elegir 1 o 2 TB, las carpetas que no caben en un disco de ese tamano se dividen por sus subcarpetas.
+    # Puede tener que medir muchas subcarpetas: se hace en segundo plano y luego se repinta el plan.
+    if ($tam -eq (TamanoDiscoNuevo)) { return }
+    GuardarAjuste 'TamanoDiscoNuevo' $tam
+    $w = $script:ventanaPrincipal
+    if ($tam -le 0) { RellenarPlan $w; return }
+    $l = $w.FindName('ListaPlan'); $l.Children.Clear()
+    $p = New-Object Windows.Controls.ProgressBar; $p.Height = 4; $p.IsIndeterminate = $true; $p.BorderThickness = 0; $p.Margin = '0,12,0,0'
+    Recurso $p ([Windows.Controls.ProgressBar]::ForegroundProperty) 'Acento'; Recurso $p ([Windows.Controls.ProgressBar]::BackgroundProperty) 'Barra'
+    [void]$l.Children.Add((Tarjeta (Apilar @((Texto "Preparando el plan para discos de $(TamComercial $tam)..." 15 'SemiBold'), (Texto "Divido las carpetas que no caben en un disco de ese tamaño y mido sus subcarpetas. Con carpetas muy grandes puede tardar unos minutos." 12 'Normal' 'Texto2'), $p))))
+    $ps = [powershell]::Create()
+    [void]$ps.AddScript({ param($config) . $config; [void](DividirSegunAjuste) }.ToString()); [void]$ps.AddArgument((Join-Path $Codigo "config.ps1"))
+    $script:division = @{ PS = $ps; H = $ps.BeginInvoke() }
+    $tm = New-Object Windows.Threading.DispatcherTimer; $tm.Interval = [TimeSpan]::FromMilliseconds(500)
+    $tm.add_Tick({ param($s, $e)
+        if (-not $script:division.H.IsCompleted) { return }
+        $s.Stop(); try { [void]$script:division.PS.EndInvoke($script:division.H) } catch {}; $script:division.PS.Dispose(); $script:division = $null
+        if ($script:ventanaPrincipal -and $script:ventanaPrincipal.IsVisible) { RellenarPlan $script:ventanaPrincipal }
+    })
+    $tm.Start()
 }
 $miPlan.add_Click({ MostrarPlan })
 $miEditar.add_Click({ MostrarEditorPlan 'AsistenteTerminado' })

@@ -1,5 +1,11 @@
 # Cambios
 
+## 0.5.5
+- Nuevo en el plan: «Discos que vas a comprar: El que convenga / 1 TB / 2 TB». Si vas a ir comprando discos pequeños, el plan te dice cuántos necesitas y qué se copiará en cada uno, empezando por lo imprescindible.
+- Las carpetas que no caben en un disco de ese tamaño se dividen solas por sus subcarpetas (tantos niveles como haga falta). Lo que ya está en un disco no se toca.
+- Si una carpeta crece y deja de caber, se divide en la medición diaria o antes de copiar.
+- Corregido: la recomendación de compra ya no dice que la copia va comprimida.
+
 ## 0.5.4
 - Liberar espacio muestra el porcentaje de la búsqueda y cuántas carpetas lleva revisadas.
 

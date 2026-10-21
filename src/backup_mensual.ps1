@@ -318,6 +318,8 @@ $resumen  = @()
 $hayError = $false
 AbrirProgreso
 
+# Si compras discos de 1 o 2 TB, lo que ha crecido y ya no cabe en uno se divide por sus subcarpetas
+if ($conectados) { [void](DividirSegunAjuste) }
 foreach ($disco in $conectados) {
     if ($script:detener) { break }
     Add-Content $Log "===== DISCO $($disco.Nombre) ($($disco.Letra)) ====="
