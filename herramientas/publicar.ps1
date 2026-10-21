@@ -27,6 +27,14 @@ foreach ($l in $lineas) {
 $notas = ($notas -join "`n").Trim()
 if (-not $notas) { throw "Falta la seccion '## $v' en CHANGELOG.md (son las novedades que vera el usuario)." }
 
+# Nada personal en lo que se publica: patrones en personal\no_publicar.txt (fuera de git, una expresion por linea)
+$patrones = Join-Path $raiz "personal\no_publicar.txt"
+if (Test-Path $patrones) {
+    $p = @([IO.File]::ReadAllLines($patrones) | Where-Object { $_.Trim() })
+    $hallados = @(git -C $raiz ls-files | ForEach-Object { Select-String -LiteralPath (Join-Path $raiz $_) -Pattern $p -ErrorAction SilentlyContinue } | ForEach-Object { "$($_.Path):$($_.LineNumber)" })
+    if ($hallados) { throw "Hay datos personales en archivos del repositorio; no se publica:`n$($hallados -join "`n")" }
+}
+
 # Lo normal: publicar desde GitHub Actions
 if (-not $SoloPreparar -and -not $Local) {
     if (git -C $raiz status --porcelain) { throw "Hay cambios sin guardar en git. Haz commit antes de publicar." }
