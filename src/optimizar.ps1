@@ -31,8 +31,10 @@ function BuscarCarpetasConNombre($raices, $patron, $prof = 6) {
     # Carpetas cuyo nombre encaja con $patron dentro de $raices (sin entrar en ellas ni en las que se saltan)
     $pila = New-Object System.Collections.Stack
     foreach ($r in $raices) { if ($r -and (Test-Path -LiteralPath $r)) { $pila.Push(@((New-Object IO.DirectoryInfo $r), 0)) } }
+    $vistas = 0
     while ($pila.Count) {
         $d, $n = $pila.Pop()
+        $vistas++; if ($script:estadoBusq -and $vistas % 500 -eq 0) { $script:estadoBusq.Paso = "Buscando carpetas que se regeneran (node_modules, previas de Lightroom): {0:N0} carpetas revisadas..." -f $vistas }
         try {
             foreach ($s in $d.EnumerateDirectories()) {
                 if ($s.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
@@ -119,6 +121,7 @@ function BuscarOportunidades($letras = $null, $estado = $null) {
     $raices = @(@($Carpetas | ForEach-Object { $_.Origen }) + @([Environment]::GetFolderPath('MyPictures')) | Where-Object { EnLetras $_ } | Select-Object -Unique)
     $nm = @(BuscarCarpetasConNombre $raices '^node_modules$' | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-90) })
     if ($nm) { Anadir((Oportunidad 'node_modules' "node_modules de proyectos parados" "$($nm.Count) carpetas de proyectos sin tocar en 3 meses. Se recuperan con «npm install»." ($nm | ForEach-Object { $_.FullName }) $false)) }
+    PasoBusqueda "Buscando previas de Lightroom..." 0.38
     $lr = @(BuscarCarpetasConNombre $raices 'Previews\.lrdata$' | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-90) })
     if ($lr) { Anadir((Oportunidad 'lightroom' "Previas de Lightroom antiguas" "$($lr.Count) catálogos sin abrir en 3 meses. Lightroom las vuelve a crear al abrir el catálogo." ($lr | ForEach-Object { $_.FullName }) $false)) }
     # 6) Subcarpetas que ya tienen una copia al dia en un disco de backup (sin cambios desde la ultima copia)
@@ -235,7 +238,7 @@ function RevisarBusquedaVentana {
         $o.Items = @($e.Items.ToArray() | Sort-Object { $_.Tipo -eq 'copiado' }, { -$_.Bytes })
         PintarOportunidades $o.Items
     } elseif ($o.Progreso) {
-        $o.Progreso.Value = $e.Frac; $o.PasoTxt.Text = $e.Paso
+        $o.Progreso.Value = $e.Frac; $o.PasoTxt.Text = $e.Paso; $o.PctTxt.Text = "{0:N0} %" -f [math]::Floor($e.Frac * 100)
     }
     if ($e.Fin) {
         $o.Timer.Stop()
@@ -313,8 +316,9 @@ function PintarOportunidades($items) {
         Recurso $p ([Windows.Controls.ProgressBar]::ForegroundProperty) 'Acento'; Recurso $p ([Windows.Controls.ProgressBar]::BackgroundProperty) 'Barra'
         $paso = Texto $e.Paso 12 'Normal' 'Texto2'
         $tit = if ($o.Items) { "Sigo buscando en $($o.Letras -join ', ')..." } else { "Buscando qué se puede liberar en $($o.Letras -join ', ')..." }
-        [void]$l.Children.Add((Tarjeta (Apilar @((Texto $tit 15 'SemiBold'), $paso, $p))))
-        $o.Progreso = $p; $o.PasoTxt = $paso
+        $pct = Texto ("{0:N0} %" -f [math]::Floor($e.Frac * 100)) 15 'SemiBold' 'Acento'
+        [void]$l.Children.Add((Tarjeta (Apilar @((Fila @((Texto $tit 15 'SemiBold'), $pct) @('*', 'Auto')), $paso, $p))))
+        $o.Progreso = $p; $o.PasoTxt = $paso; $o.PctTxt = $pct
     }
     ActualizarTotalLiberar
 }

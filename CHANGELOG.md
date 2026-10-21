@@ -1,5 +1,8 @@
 # Cambios
 
+## 0.5.4
+- Liberar espacio muestra el porcentaje de la búsqueda y cuántas carpetas lleva revisadas.
+
 ## 0.5.3
 - Liberar espacio: elige en qué discos buscar marcando o desmarcando cada uno. Los discos de copias van desmarcados de entrada y se recuerda tu elección.
 - Liberar espacio enseña lo que encuentra según lo va encontrando (papelera, temporales, cachés y Descargas salen en segundos) con una barra de progreso, y puedes ir marcando mientras sigue buscando.
