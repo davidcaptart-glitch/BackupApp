@@ -495,6 +495,10 @@ $XamlPlan = @"
     <TextBlock Text="Plan de copias" FontSize="28" FontWeight="SemiBold" FontFamily="Segoe UI Variable Display, Segoe UI"/>
     <TextBlock x:Name="Desc" Grid.Row="1" Foreground="{DynamicResource Texto2}" Margin="0,6,0,18" TextWrapping="Wrap" Text="Qué se copia en cada disco y qué espera a un disco nuevo."/>
     <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"><StackPanel x:Name="ListaPlan"/></ScrollViewer>
+    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Left" Margin="0,18,0,0">
+      <Button x:Name="BtnLiberar" Content="Liberar espacio" Margin="0,0,8,0"/>
+      <Button x:Name="BtnExplorar" Content="Explorar discos"/>
+    </StackPanel>
     <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
       <Button x:Name="BtnAsis" Content="Asistente" Margin="0,0,8,0"/>
       <Button x:Name="BtnEditar" Content="Editar el plan" Margin="0,0,8,0"/>
@@ -508,6 +512,8 @@ function MostrarPlan {
     $w.FindName('BtnCerrar').add_Click({ param($s, $e) [Windows.Window]::GetWindow($s).Close() })
     $w.FindName('BtnAsis').add_Click({ param($s, $e) [Windows.Window]::GetWindow($s).Close(); AbrirAsistente })
     $w.FindName('BtnEditar').add_Click({ param($s, $e) [Windows.Window]::GetWindow($s).Close(); MostrarEditorPlan 'AsistenteTerminado' })
+    $w.FindName('BtnLiberar').add_Click({ MostrarLiberarEspacio })
+    $w.FindName('BtnExplorar').add_Click({ MostrarExplorador })
     $w.Cursor = [Windows.Input.Cursors]::Wait
     MostrarSinBloquear $w
     $discos = @(LeerDiscos)

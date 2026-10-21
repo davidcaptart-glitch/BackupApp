@@ -1,5 +1,9 @@
 # Cambios
 
+## 0.5.2
+- La ventana de la copia tiene «Abrir BackupApp»: mientras copia puedes abrir el plan, liberar espacio o explorar los discos.
+- La ventana del plan tiene «Liberar espacio» y «Explorar discos».
+
 ## 0.5.1
 - En «Editar el plan» cada subcarpeta tiene tres opciones: «Automático», el disco que elijas o «Esperar» (se queda para un disco futuro aunque quepa).
 - «Todo su contenido»: manda de una vez todas las subcarpetas de una carpeta a un disco, a esperar o a automático.

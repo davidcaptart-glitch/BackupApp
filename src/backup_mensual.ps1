@@ -34,13 +34,18 @@ function AbrirProgreso {
     <ProgressBar x:Name="Barra" Height="6" Minimum="0" Maximum="1" BorderThickness="0" Foreground="{DynamicResource Acento}" Background="{DynamicResource Barra}"/>
     <DockPanel Margin="0,16,0,0">
       <TextBlock x:Name="Cuenta" Foreground="{DynamicResource Texto2}" VerticalAlignment="Center"/>
-      <Button x:Name="BtnDetener" Content="Detener" HorizontalAlignment="Right"/>
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+        <Button x:Name="BtnAbrir" Content="Abrir BackupApp" Margin="0,0,8,0"/>
+        <Button x:Name="BtnDetener" Content="Detener"/>
+      </StackPanel>
     </DockPanel>
     <TextBlock Margin="0,14,0,0" FontSize="11.5" Foreground="{DynamicResource Texto2}" TextWrapping="Wrap" Text="Puedes seguir usando el PC. Si detienes la copia, lo ya copiado se conserva y la próxima vez seguirá donde se quedó."/>
   </StackPanel>
 </Window>
 "@
     $w.FindName('BtnDetener').add_Click({ param($s, $e) $script:detener = $true; $s.IsEnabled = $false; $s.Content = "Deteniendo..." })
+    # El icono abre su ventana principal (plan, liberar espacio, explorar) sin parar la copia
+    $w.FindName('BtnAbrir').add_Click({ Set-Content -LiteralPath (Join-Path $Datos "abrir.senal") 'x' -ErrorAction SilentlyContinue })
     $w.add_Closing({ param($s, $e) if (-not $script:cerrandoProgreso) { $e.Cancel = $true; $script:detener = $true } })
     $w.Show()
     $script:prog = $w
