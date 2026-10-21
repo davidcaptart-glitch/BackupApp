@@ -91,7 +91,11 @@ begin
   Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
     '-NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name=''powershell.exe''\" | Where-Object { $_.CommandLine -like ''*bandeja.ps1*'' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"',
     '', SW_HIDE, ewWaitUntilTerminated, Codigo);
-  Sleep(1000);
+  { El proceso cerrado a la fuerza puede tardar unos segundos en soltar el mutex (ventanas abiertas, busquedas en segundo plano) }
+  for i := 1 to 20 do begin
+    if not CheckForMutexes(MUTEX_ICONO) then Break;
+    Sleep(500);
+  end;
   DeleteFile(DirDatos + '\salir.senal');
   Result := not CheckForMutexes(MUTEX_ICONO);
 end;
