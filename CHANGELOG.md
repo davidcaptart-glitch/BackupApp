@@ -1,8 +1,7 @@
 # Cambios
 
-## 0.6.1
-- Liberar espacio ya no parece parado en el 30 %: mientras busca carpetas que se regeneran (node_modules, previas de Lightroom) se ve cuántas carpetas lleva revisadas y el porcentaje avanza.
-- Esa búsqueda se hace de una sola pasada (antes eran dos) y lo encontrado se recuerda un día, así que al volver a abrir Liberar espacio es inmediato.
+## 0.6.2
+- Liberar espacio ya no se queda clavado en el 30 %: ya no recorre todas tus carpetas buscando node_modules y previas de Lightroom (con decenas de miles de carpetas tardaba muchísimo). Las apunta la medición diaria de tamaños, que ya lee todas las carpetas del plan, y Liberar espacio usa esa lista al momento.
 
 ## 0.6.0
 - Una sola ventana para todo: menú a la izquierda (Inicio, Copia, Editar el plan, Liberar espacio, Explorar discos, Tamaños, Asistente) y la pantalla elegida a la derecha. Ya no se abren ventanas sueltas.

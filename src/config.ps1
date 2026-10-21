@@ -225,6 +225,7 @@ function CapturarErrores($donde) {
 # La copia no abre ventana propia si el icono esta abierto: cuenta lo que hace en copia_estado.json, pregunta por
 # pregunta.json (la ventana principal contesta en respuesta.json) y se detiene si aparece detener.senal.
 # El icono escribe bandeja.vivo cada pocos segundos para que la copia sepa que alguien la esta mirando.
+$FicheroRegenerables = Join-Path $Datos "regenerables.json"   # carpetas que se regeneran, apuntadas en la medicion diaria
 $FicheroEstadoCopia = Join-Path $Datos "copia_estado.json"
 $FicheroPregunta = Join-Path $Datos "pregunta.json"
 $FicheroRespuesta = Join-Path $Datos "respuesta.json"
@@ -267,14 +268,19 @@ function UnidadDeRuta($ruta) {
 # recibe en [0] los bytes contados hasta el momento: asi otra ventana puede mostrar el progreso sin que el
 # medidor tenga que llamar a codigo de PowerShell (eso, desde otro hilo, puede quedarse bloqueado). Con -Rapido no entra en las carpetas excluidas
 # (node_modules...): Bytes = BytesBackup, pero es muchisimo mas rapido. Basta para planificar el reparto.
-if (-not ("BackupApp.Medidor3" -as [type])) {
+# $Hallados, si se da (una List[string]), recibe las carpetas que se regeneran que se encuentra por el camino
+# (node_modules, previas de Lightroom): asi Liberar espacio no tiene que recorrer otra vez todo el disco.
+if (-not ("BackupApp.Medidor4" -as [type])) {
     Add-Type -TypeDefinition @"
 using System;
 using System.IO;
 using System.Collections.Generic;
 namespace BackupApp {
-    public static class Medidor3 {
-        public static long[] Medir(string raiz, bool soloRaiz, bool entrarExcluidas, string[] excluir, long[] contador) {
+    public static class Medidor4 {
+        public static bool Regenerable(string nombre) {
+            return nombre.Equals("node_modules", StringComparison.OrdinalIgnoreCase) || nombre.EndsWith("Previews.lrdata", StringComparison.OrdinalIgnoreCase);
+        }
+        public static long[] Medir(string raiz, bool soloRaiz, bool entrarExcluidas, string[] excluir, long[] contador, List<string> hallados) {
             HashSet<string> ex = new HashSet<string>(excluir ?? new string[0], StringComparer.OrdinalIgnoreCase);
             long bytes = 0, backup = 0, archivos = 0, ultimo = DateTime.MinValue.Ticks;
             Stack<KeyValuePair<DirectoryInfo, bool>> pila = new Stack<KeyValuePair<DirectoryInfo, bool>>();
@@ -287,6 +293,7 @@ namespace BackupApp {
                         DirectoryInfo d = i as DirectoryInfo;
                         if (d != null) {
                             if (soloRaiz) continue;
+                            if (hallados != null && !e.Value && Regenerable(d.Name)) hallados.Add(d.FullName);
                             bool excluida = e.Value || ex.Contains(d.Name);
                             if (excluida && !entrarExcluidas) continue;
                             pila.Push(new KeyValuePair<DirectoryInfo, bool>(d, excluida)); continue;
@@ -305,8 +312,8 @@ namespace BackupApp {
 }
 "@
 }
-function Analizar($raiz, [switch]$SoloRaiz, [switch]$Rapido, [long[]]$Contador = $null) {
-    $r = [BackupApp.Medidor3]::Medir($raiz, [bool]$SoloRaiz, -not $Rapido, [string[]]$Excluir, $Contador)
+function Analizar($raiz, [switch]$SoloRaiz, [switch]$Rapido, [long[]]$Contador = $null, $Hallados = $null) {
+    $r = [BackupApp.Medidor4]::Medir($raiz, [bool]$SoloRaiz, -not $Rapido, [string[]]$Excluir, $Contador, $Hallados)
     [pscustomobject]@{ Bytes = $r[0]; BytesBackup = $r[1]; Archivos = $r[2]
                        Ultimo = $(if ($r[3] -gt [datetime]::MinValue.Ticks) { New-Object DateTime ([int64]$r[3]) } else { [datetime]::MinValue }) }
 }
