@@ -171,7 +171,10 @@ $XamlLiberar = @"
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
     <TextBlock Text="Liberar espacio" FontSize="28" FontWeight="SemiBold" FontFamily="Segoe UI Variable Display, Segoe UI"/>
     <TextBlock Grid.Row="1" Foreground="{DynamicResource Texto2}" Margin="0,6,0,16" TextWrapping="Wrap" Text="Marca lo que quieres borrar. Lo que está marcado de entrada se regenera solo o ya lo habías borrado; lo demás, revísalo. Nada se borra sin que lo confirmes."/>
-    <UniformGrid x:Name="Unidades" Grid.Row="2" Rows="1" Margin="0,0,0,12"/>
+    <DockPanel Grid.Row="2" Margin="0,0,0,12">
+      <Button x:Name="BtnTodo" DockPanel.Dock="Bottom" Content="Seleccionar todo" Style="{DynamicResource Enlace}" HorizontalAlignment="Right" Margin="0,10,0,0"/>
+      <UniformGrid x:Name="Unidades" Rows="1"/>
+    </DockPanel>
     <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"><StackPanel x:Name="Lista"/></ScrollViewer>
     <Grid Grid.Row="4" Margin="0,18,0,0">
       <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -202,6 +205,12 @@ function MostrarLiberarEspacio([switch]$Modal) {
     $w.FindName('BtnWindows').add_Click({ Start-Process 'ms-settings:storagesense' })
     $w.FindName('BtnExplorar').add_Click({ if (Get-Command MostrarExplorador -ErrorAction SilentlyContinue) { MostrarExplorador } })
     $w.FindName('BtnLiberar').add_Click({ LiberarSeleccion })
+    $w.FindName('BtnTodo').add_Click({
+        # Marca todo lo encontrado (para luego desmarcar lo que se quiera conservar) o, si ya esta todo, lo desmarca
+        $o = $script:opt; $todo = $o.Checks.Count -and @($o.Checks.Values | Where-Object { -not $_.IsChecked }).Count -eq 0
+        foreach ($k in @($o.Checks.Keys)) { $o.Checks[$k].IsChecked = -not $todo; $o.Marcado[$o.Items[$k].Id] = -not $todo }
+        ActualizarTotalLiberar
+    })
     $w.add_Closed({ $o = $script:opt; if ($o.Timer) { $o.Timer.Stop() }; PararBusquedaVentana })
     $script:opt.Timer = New-Object Windows.Threading.DispatcherTimer; $script:opt.Timer.Interval = [TimeSpan]::FromMilliseconds(300)
     $script:opt.Timer.add_Tick({ RevisarBusquedaVentana })
@@ -333,7 +342,8 @@ function VerOportunidad($it) {
 function ActualizarTotalLiberar {
     $o = $script:opt; $t = [int64]0
     foreach ($k in $o.Checks.Keys) { if ($o.Checks[$k].IsChecked) { $t += $o.Items[$k].Bytes } }
-    $b = $o.Win.FindName('BtnLiberar'); $b.IsEnabled = $t -gt 0; $b.Content = if ($t -gt 0) { "Liberar $(TamTxt $t)" } else { "Liberar" }
+    $b = $o.Win.FindName('BtnLiberar'); $b.IsEnabled = $t -gt 0 -and -not $o.ProcLiberar; $b.Content = if ($o.ProcLiberar) { "Liberando..." } elseif ($t -gt 0) { "Liberar $(TamTxt $t)" } else { "Liberar" }
+    $o.Win.FindName('BtnTodo').Content = if ($o.Checks.Count -and @($o.Checks.Values | Where-Object { -not $_.IsChecked }).Count -eq 0) { "Quitar la selección" } else { "Seleccionar todo" }
     $o.Total = $t
 }
 function LiberarSeleccion {

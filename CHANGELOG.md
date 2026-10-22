@@ -1,5 +1,9 @@
 # Cambios
 
+## 0.6.8
+- Explorar discos: cada carpeta tiene «Abrir ›» y se entra también con doble clic en su fila (antes solo pulsando el nombre, y no se notaba).
+- «Seleccionar todo» en Explorar discos y en Liberar espacio: marca todo y desmarca lo que quieras conservar. Con todo marcado pasa a «Quitar la selección».
+
 ## 0.6.7
 - Liberar espacio ya no bloquea la ventana al borrar: el borrado va en un proceso aparte y su avance (qué carpeta, GB liberados y porcentaje, también dentro de cada carpeta) se ve en «Copia» y en el recuadro del menú. Al terminar sale el resultado y la lista se actualiza.
 - Lo mismo al borrar del PC desde Explorar discos: se ve cuánto lleva borrado.

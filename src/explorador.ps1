@@ -18,6 +18,7 @@ $XamlExplorador = @"
     <WrapPanel x:Name="Unidades" Grid.Row="2" Margin="0,0,0,10"/>
     <DockPanel Grid.Row="3" Margin="0,0,0,10">
       <Button x:Name="BtnSubir" DockPanel.Dock="Left" Padding="12,6" Margin="0,0,10,0" ToolTip="Subir a la carpeta de arriba"/>
+      <Button x:Name="BtnTodo" DockPanel.Dock="Right" Content="Seleccionar todo" Style="{DynamicResource Enlace}" Margin="10,0,0,0" VerticalAlignment="Center"/>
       <TextBlock x:Name="Ruta" VerticalAlignment="Center" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
     </DockPanel>
     <ScrollViewer x:Name="Scroll" Grid.Row="4" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,10,0"><StackPanel x:Name="Lista"/></ScrollViewer>
@@ -45,6 +46,7 @@ function MostrarExplorador($ruta = $null) {
     $w.FindName('BtnCerrar').add_Click({ $script:exp.Win.Close() })
     $w.FindName('BtnBorrar').add_Click({ BorrarSeleccionExp })
     $w.FindName('BtnArchivar').add_Click({ ArchivarSeleccionExp })
+    $w.FindName('BtnTodo').add_Click({ SeleccionarTodoExp })
     $script:exp.Timer = New-Object Windows.Threading.DispatcherTimer; $script:exp.Timer.Interval = [TimeSpan]::FromMilliseconds(400)
     $script:exp.Timer.add_Tick({ TickExplorador })
     $w.add_Closed({ $e = $script:exp; $e.Timer.Stop(); $e.Estado.Gen++; if ($e.Medidor) { try { [void]$e.Medidor.PS.BeginStop($null, $null) } catch {} } })   # sin esperar: una medicion grande podia dejar el icono colgado
@@ -135,7 +137,17 @@ function PintarFilasExp {
         $barra = BarraUso $(if ($max -gt 0) { $tam / $max } else { 0 }); $barra.Margin = '0,6,0,0'
         $der = Apilar @($txt, $barra); $der.Width = 170; $der.Margin = '12,0,0,0'
         $f.TxtTam = $txt
-        $card = Tarjeta (Fila @($chk, $ico, $info, $der) @('Auto', 'Auto', '*', 'Auto')); $card.Padding = '14,8'; $card.Margin = '0,0,0,6'
+        $abrir = $null
+        if ($f.Dir) {
+            # Para entrar en una carpeta: su nombre, el boton «Abrir ›» o doble clic en la fila
+            $abrir = New-Object Windows.Controls.Button; $abrir.Content = "Abrir $([char]0x203A)"; $abrir.Tag = $f.Ruta; $abrir.Margin = '12,0,0,0'
+            $abrir.add_Click({ param($s, $x) IrA $s.Tag })
+        }
+        $card = Tarjeta (Fila @($chk, $ico, $info, $der, $abrir) @('Auto', 'Auto', '*', 'Auto', 'Auto')); $card.Padding = '14,8'; $card.Margin = '0,0,0,6'
+        if ($f.Dir) {
+            $card.Tag = $f.Ruta; $card.Cursor = [Windows.Input.Cursors]::Hand
+            $card.add_MouseLeftButtonDown({ param($s, $x) if ($x.ClickCount -eq 2) { $x.Handled = $true; IrA $s.Tag } })
+        }
         $f.Card = $card
         [void]$lista.Children.Add($card)
     }
@@ -178,9 +190,20 @@ function TickExplorador {
     # Al terminar un archivado o un borrado, se vuelve a leer la carpeta
     if ($e.Proc -and $e.Proc.HasExited) { $e.Proc = $null; foreach ($k in @($e.Estado.Tam.Keys)) { if (-not (Test-Path -LiteralPath $k)) { $e.Estado.Tam.Remove($k) } }; PintarUnidadesExp; IrA $e.Ruta }
 }
+function SeleccionarTodoExp {
+    # Marca todo lo de esta carpeta (para luego desmarcar lo que se quiera conservar) o, si ya esta todo, lo desmarca
+    $e = $script:exp
+    $todo = $e.Filas.Count -and @($e.Filas | Where-Object { -not $e.Sel.ContainsKey($_.Ruta) }).Count -eq 0
+    foreach ($f in $e.Filas) {
+        if ($todo) { [void]$e.Sel.Remove($f.Ruta) } else { $e.Sel[$f.Ruta] = $f }
+        if ($f.Check) { $f.Check.IsChecked = -not $todo }
+    }
+    ActualizarSeleccionExp
+}
 function ActualizarSeleccionExp {
     $e = $script:exp; $w = $e.Win
     $sel = @($e.Sel.Values); $bytes = [int64](($sel | ForEach-Object { [int64]$e.Estado.Tam[$_.Ruta] } | Measure-Object -Sum).Sum)
+    $w.FindName('BtnTodo').Content = if ($e.Filas.Count -and $sel.Count -ge $e.Filas.Count) { "Quitar la selección" } else { "Seleccionar todo" }
     $sinMedir = @($sel | Where-Object { -not $e.Estado.Tam.ContainsKey($_.Ruta) }).Count
     $w.FindName('Seleccion').Text = if ($sel) { "$($sel.Count) seleccionados  $([char]0x00B7)  $(TamTxt $bytes)$(if ($sinMedir) { ' (midiendo...)' })" } else { "Marca las carpetas o archivos que quieras copiar y borrar, o solo borrar." }
     $w.FindName('BtnBorrar').IsEnabled = [bool]$sel
@@ -195,6 +218,7 @@ function ActualizarSeleccionExp {
 function ArchivarSeleccionExp {
     $e = $script:exp; $w = $e.Win
     $sel = @($e.Sel.Values); $bytes = [int64](($sel | ForEach-Object { [int64]$e.Estado.Tam[$_.Ruta] } | Measure-Object -Sum).Sum)
+    $w.FindName('BtnTodo').Content = if ($e.Filas.Count -and $sel.Count -ge $e.Filas.Count) { "Quitar la selección" } else { "Seleccionar todo" }
     if ((Get-Command Copiando -ErrorAction SilentlyContinue) -and (Copiando)) { [void](Dialogo $w "Hay una copia en marcha" "Espera a que termine la copia de seguridad."); return }
     $letras = @($sel | ForEach-Object { $_.Ruta.Substring(0, 2).ToUpper() } | Select-Object -Unique)
     $discos = @(DiscosConectados | Where-Object { $letras -notcontains $_.Letra.ToUpper() })
@@ -230,6 +254,7 @@ function ArchivarSeleccionExp {
 function BorrarSeleccionExp {
     $e = $script:exp; $w = $e.Win
     $sel = @($e.Sel.Values); $bytes = [int64](($sel | ForEach-Object { [int64]$e.Estado.Tam[$_.Ruta] } | Measure-Object -Sum).Sum)
+    $w.FindName('BtnTodo').Content = if ($e.Filas.Count -and $sel.Count -ge $e.Filas.Count) { "Quitar la selección" } else { "Seleccionar todo" }
     $archivo = @($sel | Where-Object { (EstadoRuta $_.Ruta)[0] -eq 'archivo' })
     $plan = @($sel | Where-Object { (EstadoRuta $_.Ruta)[0] -eq 'plan' })
     $backup = @($sel | Where-Object { (EstadoRuta $_.Ruta)[0] -in 'backup', 'discobackup' })
