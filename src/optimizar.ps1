@@ -119,6 +119,7 @@ function BuscarOportunidades($letras = $null, $estado = $null) {
     $discos = @(LeerDiscos); $rep = LeerReparto; $unid = @(UnidadesActuales); $tam = TamanosDe $unid
     # Solo las que tienen disco con alguna copia hecha (medir cada una es lo que mas tarda)
     $conCopia = @{}; foreach ($d in $discos) { if ($d.UltimaCopia) { $conCopia[$d.Id] = $true } }
+    $ultCambio = LeerUltimoCambio
     $cand = @($unid | Where-Object { $_.Tipo -eq 'carpeta' -and (EnLetras $_.Clave) -and [int64]$tam[$_.Clave] -ge 1GB -and $conCopia[$rep[$_.Clave]] }); $k = 0
     foreach ($u in $cand) {
         $k++; PasoBusqueda "Buscando lo que ya está copiado en tus discos de backup ($k de $($cand.Count))..." (0.45 + 0.55 * ($k - 1) / [math]::Max(1.0, $cand.Count))
@@ -126,7 +127,10 @@ function BuscarOportunidades($letras = $null, $estado = $null) {
         if (-not $d -or -not $d.UltimaCopia -or [int64]$tam[$u.Clave] -lt 1GB) { continue }
         # UltimaCopia solo guarda los minutos: se toma el final de ese minuto (antes de borrar se comprueba igualmente que la copia es identica)
         $copia = [datetime]::ParseExact($d.UltimaCopia, 'yyyy-MM-dd HH:mm', $null).AddSeconds(59)
-        $a = Analizar $u.Clave
+        # La medicion diaria ya apunto el ultimo cambio de cada carpeta: releerla entera tardaba muchos minutos.
+        # (Antes de borrar se comprueba igualmente con robocopy que la copia es identica.)
+        if ($ultCambio.ContainsKey($u.Clave)) { $a = [pscustomobject]@{ Ultimo = $ultCambio[$u.Clave]; Bytes = [int64]$tam[$u.Clave] } }
+        else { $a = Analizar $u.Clave }
         if ($a.Ultimo -ge $copia) { continue }   # ha cambiado despues de la copia
         Anadir([pscustomobject]@{ Id = "copiado:$($u.Clave)"; Titulo = $u.Nombre; Rutas = @($u.Clave); Bytes = [int64]$a.Bytes; Seguro = $false; Tipo = 'copiado'
             Detalle = "$(Split-Path $u.Clave -Parent)   $([char]0x00B7)   copiada en «$($d.Nombre)» el $($copia.ToString('dd/MM/yyyy'))   $([char]0x00B7)   sin cambios desde el $($a.Ultimo.ToString('dd/MM/yyyy'))"

@@ -185,7 +185,11 @@ function MostrarCopia {
         $w.FindName('BtnDetener').add_Click({ param($s, $e)
             Set-Content -LiteralPath $FicheroDetener 'detener' -ErrorAction SilentlyContinue; $s.IsEnabled = $false; $s.Content = "Deteniendo..." })
         $w.FindName('BtnElegir').add_Click({ $r = "$($script:copiaEstado.Resultado.Explorar)"; MostrarExplorador $(if ($r -and (Test-Path -LiteralPath $r)) { $r } else { $null }) })
-        $w.FindName('BtnRegistro').add_Click({ $l = "$($script:copiaEstado.Log)"; if ($l -and (Test-Path -LiteralPath $l)) { Start-Process notepad.exe "`"$l`"" } else { New-Item -ItemType Directory -Path $CarpetaLogs -Force | Out-Null; Start-Process explorer.exe $CarpetaLogs } })
+        $w.FindName('BtnRegistro').add_Click({
+            # El registro de esta copia o, si no lo hay, el de la ultima copia
+            $l = "$($script:copiaEstado.Log)"
+            if (-not ($l -and (Test-Path -LiteralPath $l))) { $l = (Get-ChildItem -LiteralPath $CarpetaLogs -Filter 'backup_*.log' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName }
+            if ($l) { Start-Process notepad.exe "`"$l`"" } else { New-Item -ItemType Directory -Path $CarpetaLogs -Force | Out-Null; Start-Process explorer.exe $CarpetaLogs } })
         $w.add_Closed({ $script:vistaCopia = $null })
         $script:vistaCopia = $w
     }
@@ -217,6 +221,16 @@ function PintarCopia {
         $w.FindName('Estado').Text = "No hay ninguna copia en marcha."
     }
     $res = if ($e) { $e.Resultado } else { $null }
+    if (-not $res) {
+        # Sin resultado de esta ventana (la copia se hizo con una version anterior o desde fuera): lo que dicen los discos
+        $hechos = @(LeerDiscos | Where-Object { $_.UltimaCopia })
+        if ($hechos) {
+            $ult = $hechos | Sort-Object UltimaCopia -Descending | Select-Object -First 1
+            $ini = if (@($Carpetas).Count -eq 1) { $Carpetas[0].Origen } elseif ($Carpetas) { Split-Path $Carpetas[0].Origen -Parent } else { $null }
+            $res = [pscustomobject]@{ Titulo = "Última copia"; Fecha = ([datetime]::ParseExact($ult.UltimaCopia, 'yyyy-MM-dd HH:mm', $null)).ToString('o'); Explorar = $ini
+                Texto = (($hechos | ForEach-Object { "$($_.Nombre): copia del $(([datetime]::ParseExact($_.UltimaCopia, 'yyyy-MM-dd HH:mm', $null)).ToString('dd/MM/yyyy')) a las $($_.UltimaCopia.Substring(11))" }) -join "`n") + "`n`nPuedes borrar del PC lo que ya está copiado: en «Liberar espacio» (apartado «Ya copiado») o con «Elegir qué borrar del PC»." }
+        }
+    }
     if ($res -and -not $activa) {
         $r.Visibility = 'Visible'
         $w.FindName('ResTitulo').Text = "$($res.Titulo)"; $w.FindName('ResTexto').Text = "$($res.Texto)"

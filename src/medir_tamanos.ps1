@@ -24,9 +24,11 @@ $hoy = Get-Date -Format "yyyy-MM-dd"
 $totales = @{}
 $hallados = New-Object 'System.Collections.Generic.List[string]'   # node_modules y previas de Lightroom (para Liberar espacio)
 $unidadesFilas = @()
+$ultimos = @()   # ultimo cambio de cada unidad: Liberar espacio lo usa para saber al momento que sigue igual que su copia
 foreach ($u in (UnidadesActuales)) {
     $a = if ($u.Tipo -eq 'sueltos') { Analizar $u.Dir -SoloRaiz } else { Analizar $u.Clave -Hallados $hallados }
     $unidadesFilas += [pscustomobject]@{ Unidad = $u.Clave; Bytes = $a.BytesBackup; Fecha = $hoy }
+    if ($a.Ultimo -gt [datetime]::MinValue) { $ultimos += [pscustomobject]@{ Unidad = $u.Clave; Ultimo = $a.Ultimo.ToString('yyyy-MM-dd HH:mm:ss') } }
     $o = $u.Carpeta.Origen
     if (-not $totales.ContainsKey($o)) { $totales[$o] = @([int64]0, [int64]0) }
     $totales[$o][0] += $a.Bytes; $totales[$o][1] += $a.Archivos
@@ -39,7 +41,10 @@ foreach ($c in $Carpetas) {
         if ([BackupApp.Medidor4]::Regenerable($_.Name)) { $hallados.Add($_.FullName) }
         $a = Analizar $_.FullName; $totales[$c.Origen][0] += $a.Bytes; $totales[$c.Origen][1] += $a.Archivos }
 }
-$unidadesFilas | Export-Csv $FicheroUnidades -Delimiter ';' -NoTypeInformation -Encoding UTF8
+# Si algo falla al guardar (archivo abierto en ese momento...), se apunta en logs\errores.log en vez de perderse sin aviso
+if (-not $unidadesFilas) { RegistrarError 'medicion' "No se encontró ninguna carpeta que medir ($(@($Carpetas).Count) carpetas en el plan)" }
+try { $unidadesFilas | Export-Csv $FicheroUnidades -Delimiter ';' -NoTypeInformation -Encoding UTF8 -ErrorAction Stop } catch { RegistrarError 'medicion' $_ }
+try { $ultimos | Export-Csv $FicheroUltimoCambio -Delimiter ';' -NoTypeInformation -Encoding UTF8 -ErrorAction Stop } catch { RegistrarError 'medicion' $_ }
 EscribirJson $FicheroRegenerables ([pscustomobject]@{ Fecha = (Get-Date).ToString('o'); Rutas = @($hallados | Select-Object -Unique) })
 
 $filas = @()
@@ -47,7 +52,7 @@ if (Test-Path $Historial) { $filas = @(Import-Csv $Historial -Delimiter ';' | Wh
 foreach ($k in $totales.Keys) {
     $filas += [pscustomobject]@{ Fecha = $hoy; Carpeta = $k; Bytes = $totales[$k][0]; Archivos = $totales[$k][1] }
 }
-$filas | Export-Csv $Historial -Delimiter ';' -NoTypeInformation -Encoding UTF8
+try { $filas | Export-Csv $Historial -Delimiter ';' -NoTypeInformation -Encoding UTF8 -ErrorAction Stop } catch { RegistrarError 'medicion' $_ }
 
 # Si compras discos de 1 o 2 TB: las carpetas sin disco que ya no caben en uno se dividen por sus subcarpetas
 [void](DividirSegunAjuste)

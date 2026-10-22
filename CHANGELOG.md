@@ -1,5 +1,10 @@
 # Cambios
 
+## 0.6.5
+- Liberar espacio enseña al momento lo que ya está copiado en tus discos («Ya copiado»): usa la fecha del último cambio de cada carpeta que apunta la medición diaria, en vez de releer cientos de GB (tardaba casi 10 minutos). Antes de borrar se sigue comprobando que la copia es idéntica.
+- «Copia» enseña la última copia de cada disco aunque se hiciera con una versión anterior, con «Elegir qué borrar del PC» y el registro.
+- La medición diaria apunta sus errores en logs\errores.log (antes, si no podía guardar los tamaños, no quedaba rastro).
+
 ## 0.6.4
 - Arreglado: mientras se medían los tamaños de las carpetas, la ventana decía que había una copia en marcha.
 - El recuadro de actividad del menú muestra también la medición diaria de tamaños.

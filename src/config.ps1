@@ -226,6 +226,15 @@ function CapturarErrores($donde) {
 # pregunta.json (la ventana principal contesta en respuesta.json) y se detiene si aparece detener.senal.
 # El icono escribe bandeja.vivo cada pocos segundos para que la copia sepa que alguien la esta mirando.
 $FicheroRegenerables = Join-Path $Datos "regenerables.json"   # carpetas que se regeneran, apuntadas en la medicion diaria
+$FicheroUltimoCambio = Join-Path $Datos "ultimo_cambio.csv"   # ultimo cambio de cada subcarpeta del plan, apuntado en la medicion diaria
+function LeerUltimoCambio {
+    # Unidad -> [datetime] del archivo mas reciente, segun la ultima medicion (vacio si aun no se ha medido)
+    $h = @{}
+    if (Test-Path -LiteralPath $FicheroUltimoCambio) {
+        try { Import-Csv $FicheroUltimoCambio -Delimiter ';' | ForEach-Object { $h[$_.Unidad] = [datetime]::ParseExact($_.Ultimo, 'yyyy-MM-dd HH:mm:ss', $null) } } catch {}
+    }
+    return $h
+}
 $FicheroEstadoCopia = Join-Path $Datos "copia_estado.json"
 $FicheroPregunta = Join-Path $Datos "pregunta.json"
 $FicheroRespuesta = Join-Path $Datos "respuesta.json"
