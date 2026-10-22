@@ -105,24 +105,14 @@ function BuscarOportunidades($letras = $null, $estado = $null) {
     $ya = @($inst + $zip + $rep | ForEach-Object { $_.FullName })
     $viejo = @($arch | Where-Object { $_.LastWriteTime -lt $hace180 -and $ya -notcontains $_.FullName })
     if ($viejo) { Anadir((Oportunidad 'desc:viejo' "Descargas sin tocar en 6 meses" "$($viejo.Count) archivos. Revísalos antes: puede haber algo que quieras guardar." ($viejo | ForEach-Object { $_.FullName }) $false)) }
-    # 5) Carpetas que se regeneran, dentro de las carpetas del backup y de Imagenes
-    # No se recorre el disco (con decenas de miles de carpetas tardaba muchisimo): la medicion diaria de tamanos ya
-    # lee todas las carpetas del plan y apunta en regenerables.json las que se regeneran solas
-    PasoBusqueda "Mirando las carpetas que se regeneran (node_modules, previas de Lightroom)..." 0.30
-    $reg = LeerJson $FicheroRegenerables
-    $todas = @(@(if ($reg) { $reg.Rutas }) | Where-Object { $_ -and (EnLetras $_) -and (Test-Path -LiteralPath $_) } | ForEach-Object { New-Object IO.DirectoryInfo $_ })
-    $nm = @($todas | Where-Object { $_.Name -eq 'node_modules' -and $_.LastWriteTime -lt (Get-Date).AddDays(-90) })
-    if ($nm) { Anadir((Oportunidad 'node_modules' "node_modules de proyectos parados" "$($nm.Count) carpetas de proyectos sin tocar en 3 meses. Se recuperan con «npm install»." ($nm | ForEach-Object { $_.FullName }) $false)) }
-    $lr = @($todas | Where-Object { $_.Name -match 'Previews\.lrdata$' -and $_.LastWriteTime -lt (Get-Date).AddDays(-90) })
-    if ($lr) { Anadir((Oportunidad 'lightroom' "Previas de Lightroom antiguas" "$($lr.Count) catálogos sin abrir en 3 meses. Lightroom las vuelve a crear al abrir el catálogo." ($lr | ForEach-Object { $_.FullName }) $false)) }
-    # 6) Subcarpetas que ya tienen una copia al dia en un disco de backup (sin cambios desde la ultima copia)
+    # 5) Subcarpetas que ya tienen una copia al dia en un disco de backup (sin cambios desde la ultima copia)
     $discos = @(LeerDiscos); $rep = LeerReparto; $unid = @(UnidadesActuales); $tam = TamanosDe $unid
     # Solo las que tienen disco con alguna copia hecha (medir cada una es lo que mas tarda)
     $conCopia = @{}; foreach ($d in $discos) { if ($d.UltimaCopia) { $conCopia[$d.Id] = $true } }
     $ultCambio = LeerUltimoCambio
     $cand = @($unid | Where-Object { $_.Tipo -eq 'carpeta' -and (EnLetras $_.Clave) -and [int64]$tam[$_.Clave] -ge 1GB -and $conCopia[$rep[$_.Clave]] }); $k = 0
     foreach ($u in $cand) {
-        $k++; PasoBusqueda "Buscando lo que ya está copiado en tus discos de backup ($k de $($cand.Count))..." (0.45 + 0.55 * ($k - 1) / [math]::Max(1.0, $cand.Count))
+        $k++; PasoBusqueda "Buscando lo que ya está copiado en tus discos de backup ($k de $($cand.Count))..." (0.30 + 0.40 * ($k - 1) / [math]::Max(1.0, $cand.Count))
         $d = $discos | Where-Object { $_.Id -eq $rep[$u.Clave] } | Select-Object -First 1
         if (-not $d -or -not $d.UltimaCopia -or [int64]$tam[$u.Clave] -lt 1GB) { continue }
         # UltimaCopia solo guarda los minutos: se toma el final de ese minuto (antes de borrar se comprueba igualmente que la copia es identica)
@@ -136,6 +126,16 @@ function BuscarOportunidades($letras = $null, $estado = $null) {
             Detalle = "$(Split-Path $u.Clave -Parent)   $([char]0x00B7)   copiada en «$($d.Nombre)» el $($copia.ToString('dd/MM/yyyy'))   $([char]0x00B7)   sin cambios desde el $($a.Ultimo.ToString('dd/MM/yyyy'))"
             Disco = $d.Id; DiscoNombre = $d.Nombre; Destino = (DestinoUnidad $u) })
     }
+    # 6) Carpetas que se regeneran, dentro de las carpetas del backup y de Imagenes
+    # No se recorre el disco (con decenas de miles de carpetas tardaba muchisimo): la medicion diaria de tamanos ya
+    # lee todas las carpetas del plan y apunta en regenerables.json las que se regeneran solas
+    PasoBusqueda "Midiendo las carpetas que se regeneran (node_modules, previas de Lightroom)..." 0.75
+    $reg = LeerJson $FicheroRegenerables
+    $todas = @(@(if ($reg) { $reg.Rutas }) | Where-Object { $_ -and (EnLetras $_) -and (Test-Path -LiteralPath $_) } | ForEach-Object { New-Object IO.DirectoryInfo $_ })
+    $nm = @($todas | Where-Object { $_.Name -eq 'node_modules' -and $_.LastWriteTime -lt (Get-Date).AddDays(-90) })
+    if ($nm) { Anadir((Oportunidad 'node_modules' "node_modules de proyectos parados" "$($nm.Count) carpetas de proyectos sin tocar en 3 meses. Se recuperan con «npm install»." ($nm | ForEach-Object { $_.FullName }) $false)) }
+    $lr = @($todas | Where-Object { $_.Name -match 'Previews\.lrdata$' -and $_.LastWriteTime -lt (Get-Date).AddDays(-90) })
+    if ($lr) { Anadir((Oportunidad 'lightroom' "Previas de Lightroom antiguas" "$($lr.Count) catálogos sin abrir en 3 meses. Lightroom las vuelve a crear al abrir el catálogo." ($lr | ForEach-Object { $_.FullName }) $false)) }
     PasoBusqueda "Listo" 1.0; if ($script:estadoBusq) { $script:estadoBusq.Fin = $true }
     # Primero lo que se regenera o sobra; al final, lo que ya esta copiado
     return @($o.ToArray() | Where-Object { $_.Bytes -gt 0 } | Sort-Object { $_.Tipo -eq 'copiado' }, { -$_.Bytes })
