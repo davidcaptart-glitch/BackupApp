@@ -1,5 +1,10 @@
 # Cambios
 
+## 0.6.7
+- Liberar espacio ya no bloquea la ventana al borrar: el borrado va en un proceso aparte y su avance (qué carpeta, GB liberados y porcentaje, también dentro de cada carpeta) se ve en «Copia» y en el recuadro del menú. Al terminar sale el resultado y la lista se actualiza.
+- Lo mismo al borrar del PC desde Explorar discos: se ve cuánto lleva borrado.
+- Si dentro de lo que se borra hay un enlace a otra carpeta, se quita el enlace sin tocar lo que hay al otro lado.
+
 ## 0.6.6
 - Liberar espacio enseña primero «Ya copiado» (en menos de un segundo con la medición diaria) y deja para el final las carpetas que se regeneran, que hay que medir.
 

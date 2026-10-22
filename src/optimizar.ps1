@@ -336,29 +336,6 @@ function ActualizarTotalLiberar {
     $b = $o.Win.FindName('BtnLiberar'); $b.IsEnabled = $t -gt 0; $b.Content = if ($t -gt 0) { "Liberar $(TamTxt $t)" } else { "Liberar" }
     $o.Total = $t
 }
-function BorrarYaCopiada($it) {
-    # Comprueba que la copia del disco es identica, la mueve a _ARCHIVO (asi el espejo de la proxima copia no la borra)
-    # y solo entonces borra la carpeta del PC. Devuelve $true si se ha hecho.
-    $c = DiscosConectados | Where-Object { $_.Id -eq $it.Disco } | Select-Object -First 1
-    if (-not $c) { return $false }
-    $src = $it.Rutas[0]; $dst = Join-Path $c.Raiz $it.Destino
-    if (-not (Test-Path -LiteralPath $dst)) { return $false }
-    $args2 = @("`"$src`"", "`"$dst`"", '/XD') + $Excluir + @('/MIR', '/L', '/FFT', '/XJ', '/R:0', '/W:0', '/NJH', '/NJS', '/NFL', '/NDL')
-    $pi = New-Object Diagnostics.ProcessStartInfo 'robocopy.exe', ($args2 -join ' '); $pi.UseShellExecute = $false; $pi.CreateNoWindow = $true
-    $p = [Diagnostics.Process]::Start($pi); while (-not $p.WaitForExit(150)) { [Windows.Forms.Application]::DoEvents() }
-    if ($p.ExitCode -ne 0) { return $false }   # la copia no es identica: no se toca nada
-    try {
-        $arch = Join-Path $c.Raiz (Join-Path "_ARCHIVO" $it.Destino)
-        New-Item -ItemType Directory -Path (Split-Path $arch -Parent) -Force | Out-Null
-        if (Test-Path -LiteralPath $arch) { $arch += "_" + (Get-Date -Format "yyyyMMdd") }
-        Move-Item -LiteralPath $dst -Destination $arch -ErrorAction Stop
-    } catch { return $false }
-    try { Remove-Item -LiteralPath $src -Recurse -Force -ErrorAction Stop } catch { return $false }
-    $rep = LeerReparto; [void]$rep.Remove($src); GuardarReparto $rep
-    [pscustomobject]@{ Fecha = (Get-Date -Format "yyyy-MM-dd"); Original = $src; Guardado_en = $arch; GB = [math]::Round($it.Bytes / 1GB, 2) } |
-        Export-Csv -Path (Join-Path $c.Raiz "_ARCHIVO\indice_archivo.csv") -Append -NoTypeInformation -Encoding UTF8 -Delimiter ';'
-    return $true
-}
 function LiberarSeleccion {
     $o = $script:opt; $w = $o.Win
     $sel = @(foreach ($k in $o.Checks.Keys) { if ($o.Checks[$k].IsChecked) { $o.Items[$k] } })
@@ -379,37 +356,29 @@ function LiberarSeleccion {
     if ($copiadas) { $msg += $(if ($msg) { "`n`n" } else { "" }) + "Se borrarán del PC, después de comprobar que su copia es idéntica y guardarla aparte en el disco (_ARCHIVO):`n" + (($copiadas | ForEach-Object { "$([char]0x2022) $($_.Titulo) ($(TamTxt $_.Bytes)) $([char]0x2192) «$($_.DiscoNombre)»" }) -join "`n") }
     if ($resto) { $msg += $(if ($msg) { "`n`n" } else { "" }) + "$(if ($definitivo) { 'Se borrarán DEFINITIVAMENTE (no se pueden recuperar)' } else { 'Irán a la papelera (puedes recuperarlos desde allí)' }):`n" + (($resto | ForEach-Object { "$([char]0x2022) $($_.Titulo) ($(TamTxt $_.Bytes))" }) -join "`n") }
     if ((Dialogo $w "¿Liberar $(TamTxt $o.Total)?" $msg @('Cancelar', 'Liberar') 'Liberar') -ne 'Liberar') { return }
-    $w.Cursor = [Windows.Input.Cursors]::Wait; $w.FindName('BtnLiberar').IsEnabled = $false
-    $libre = @(EstadoUnidades | ForEach-Object { $_.Libre }) | Measure-Object -Sum | Select-Object -ExpandProperty Sum
-    $fallos = 0
-    Add-Type -AssemblyName Microsoft.VisualBasic
-    foreach ($it in $sel) {
-        if ($it.Tipo -eq 'copiado') { if (-not (BorrarYaCopiada $it)) { $fallos++ }; continue }
-        if ($it.Tipo -eq 'papelera') {
-            # Solo la papelera de los discos elegidos
-            foreach ($le in @(if ($it.Letras) { $it.Letras } else { $o.Letras })) { try { Clear-RecycleBin -DriveLetter $le.Substring(0, 1) -Force -ErrorAction Stop } catch { $fallos++ } }
-            continue
-        }
-        $delTodo = $definitivo -or ($regen -contains $it)
-        foreach ($r in $it.Rutas) {
-            [Windows.Forms.Application]::DoEvents()
-            try {
-                $esDir = Test-Path -LiteralPath $r -PathType Container
-                if ($delTodo) { Remove-Item -LiteralPath $r -Recurse -Force -ErrorAction Stop }
-                elseif ($esDir) { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($r, 'OnlyErrorDialogs', 'SendToRecycleBin') }
-                else { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($r, 'OnlyErrorDialogs', 'SendToRecycleBin') }
-            } catch { $fallos++ }   # en uso o sin permiso: se deja
-        }
-    }
-    $despues = @(EstadoUnidades | ForEach-Object { $_.Libre }) | Measure-Object -Sum | Select-Object -ExpandProperty Sum
-    $w.Cursor = $null
-    $txt = "Has liberado $(TamTxt ([math]::Max(0.0, [double]($despues - $libre))))."
-    if ($resto -and -not $definitivo) { $txt += " Lo de Descargas está en la papelera: ese espacio se libera del todo cuando la vacíes." }
-    if ($fallos) { $txt += "`n`n$fallos elementos no se pudieron borrar porque estaban en uso. Cierra los programas y vuelve a intentarlo." }
-    [void](Dialogo $w "Hecho" $txt)
-    PintarUnidades
-    $o.Marcado = @{}
-    EmpezarBusquedaVentana
+    # El borrado va en otro proceso (backup_mensual.ps1 -Liberar): borrar cientos de GB tarda y la ventana no debe
+    # quedarse colgada. Se ve en «Copia» y en el recuadro del menu; al terminar se rehace esta lista.
+    $lista = Join-Path $Datos "liberar.json"
+    $items = @(foreach ($it in $sel) {
+        [pscustomobject]@{ Titulo = $it.Titulo; Tipo = $it.Tipo; Rutas = @($it.Rutas); Bytes = [int64]$it.Bytes; Regen = [bool]($regen -contains $it)
+                           Letras = @(if ($it.Tipo -eq 'papelera') { if ($it.Letras) { $it.Letras } else { $o.Letras } }); Disco = $it.Disco; DiscoNombre = $it.DiscoNombre; Destino = $it.Destino }
+    })
+    EscribirJson $lista ([pscustomobject]@{ Definitivo = $definitivo; Items = $items })
+    $o.ProcLiberar = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File `"$(Join-Path $Codigo 'backup_mensual.ps1')`" -Liberar `"$lista`""
+    try { $o.ProcLiberar.PriorityClass = 'BelowNormal' } catch {}
+    $w.FindName('BtnLiberar').IsEnabled = $false; $w.FindName('BtnLiberar').Content = "Liberando..."
+    $l = $w.FindName('Lista'); $l.Children.Clear()
+    $p = New-Object Windows.Controls.ProgressBar; $p.Height = 4; $p.IsIndeterminate = $true; $p.BorderThickness = 0; $p.Margin = '0,12,0,0'
+    Recurso $p ([Windows.Controls.ProgressBar]::ForegroundProperty) 'Acento'; Recurso $p ([Windows.Controls.ProgressBar]::BackgroundProperty) 'Barra'
+    [void]$l.Children.Add((Tarjeta (Apilar @((Texto "Liberando $(TamTxt $o.Total)..." 15 'SemiBold'), (Texto "Puedes seguir usando BackupApp: el avance se ve abajo, en el recuadro del menú, y en «Copia». Al terminar verás el resultado y esta lista se actualizará." 12 'Normal' 'Texto2'), $p))))
+    $tm = New-Object Windows.Threading.DispatcherTimer; $tm.Interval = [TimeSpan]::FromSeconds(1)
+    $tm.add_Tick({ param($s, $e)
+        $o = $script:opt; if (-not $o -or ($o.ProcLiberar -and -not $o.ProcLiberar.HasExited)) { if (-not $o) { $s.Stop() }; return }
+        $s.Stop(); $o.ProcLiberar = $null
+        if (VentanaAbierta $o.Win) { $o.Win.FindName('BtnLiberar').Content = "Liberar"; PintarUnidades; $o.Marcado = @{}; EmpezarBusquedaVentana }
+    })
+    $tm.Start()
+    return
 }
 
 # Ejecutado suelto: abrir la ventana (para probar)

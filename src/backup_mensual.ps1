@@ -10,7 +10,7 @@
 #  Muestra una ventana de progreso con "Detener"; lo copiado se conserva y la siguiente copia sigue donde se quedo.
 # ============================================================
 
-param([switch]$DesdeBandeja, [switch]$SoloNube, [string]$Archivar)   # -Archivar <lista.json>: copiar a _ARCHIVO y borrar del PC (Explorar discos)
+param([switch]$DesdeBandeja, [switch]$SoloNube, [string]$Archivar, [string]$Liberar)   # -Archivar <lista.json>: copiar a _ARCHIVO y borrar del PC (Explorar discos)
 
 . (Join-Path $PSScriptRoot "config.ps1")
 . (Join-Path $PSScriptRoot "ui.ps1")
@@ -311,6 +311,67 @@ function BorrarCopiaEnCurso { Remove-Item -LiteralPath $FicheroCopiaEnCurso -For
 # ---------- Archivar: lo que el usuario elige en "Explorar discos" ----------
 # Se copia a <disco>\BACKUP\_ARCHIVO (sin /MIR: nunca se borra nada del archivo), se comprueba que no falta nada
 # y solo entonces se borra del PC. Se apunta en _ARCHIVO\indice_archivo.csv.
+# ---------- Borrar carpetas grandes con progreso ----------
+# Borrar cientos de GB de un disco mecanico tarda muchos minutos: se hace en otro hilo, archivo a archivo, contando
+# los bytes borrados para ensenar el progreso. Los enlaces (junctions) se quitan sin entrar en ellos.
+if (-not ('BackupApp.Borrador' -as [type])) {
+    Add-Type -TypeDefinition @"
+using System; using System.IO; using System.Collections.Generic; using System.Threading; using System.Threading.Tasks;
+namespace BackupApp {
+    public static class Borrador {
+        public static Task<int> Empezar(string raiz, long[] hecho, bool[] parar) { return Task.Run(() => Borrar(raiz, hecho, parar)); }
+        static int Borrar(string raiz, long[] hecho, bool[] parar) {
+            int errores = 0;
+            var dirs = new List<string>(); var pila = new Stack<string>(); pila.Push(raiz);
+            while (pila.Count > 0) {
+                if (parar[0]) return errores;
+                string d = pila.Pop(); dirs.Add(d);
+                FileSystemInfo[] items;
+                try { items = new DirectoryInfo(d).GetFileSystemInfos(); } catch { errores++; continue; }
+                foreach (FileSystemInfo i in items) {
+                    if (parar[0]) return errores;
+                    try {
+                        if ((i.Attributes & FileAttributes.ReparsePoint) != 0) {
+                            if (i is DirectoryInfo) Directory.Delete(i.FullName, false); else { i.Attributes = FileAttributes.Normal; i.Delete(); }
+                            continue;
+                        }
+                        if (i is DirectoryInfo) { pila.Push(i.FullName); continue; }
+                        FileInfo f = (FileInfo)i; long l = f.Length;
+                        if ((f.Attributes & FileAttributes.ReadOnly) != 0) f.Attributes = FileAttributes.Normal;
+                        f.Delete(); Interlocked.Add(ref hecho[0], l);
+                    } catch { errores++; }
+                }
+            }
+            for (int k = dirs.Count - 1; k >= 0; k--) {
+                try { DirectoryInfo di = new DirectoryInfo(dirs[k]); if ((di.Attributes & FileAttributes.ReadOnly) != 0) di.Attributes = FileAttributes.Directory; di.Delete(false); } catch { errores++; }
+            }
+            return errores;
+        }
+    }
+}
+"@
+}
+function BorrarConProgreso($ruta, $titulo, [double]$base, [double]$total, $cuenta) {
+    # Borra una carpeta (o un archivo) enseñando el progreso. $base y $total: bytes ya liberados antes y bytes de todo
+    # lo que hay que borrar (para el porcentaje). Devuelve el numero de elementos que no se pudieron borrar.
+    if (-not (Test-Path -LiteralPath $ruta)) { return 0 }
+    if (-not (Test-Path -LiteralPath $ruta -PathType Container)) {
+        try { $i = Get-Item -LiteralPath $ruta -Force; $i.Attributes = 'Normal'; $i.Delete(); return 0 } catch { return 1 }
+    }
+    if ((Get-Item -LiteralPath $ruta -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        try { [IO.Directory]::Delete($ruta, $false); return 0 } catch { return 1 }   # un enlace: se quita el enlace, no lo que apunta
+    }
+    $hecho = New-Object 'long[]' 1; $parar = New-Object 'bool[]' 1
+    $t = [BackupApp.Borrador]::Empezar($ruta, $hecho, $parar)
+    while (-not $t.Wait(300)) {
+        Bombear
+        if ($script:detener) { $parar[0] = $true }
+        $b = $base + $hecho[0]
+        Progreso $null "$titulo  $([char]0x00B7)  borrando" ($b / [math]::Max(1.0, $total)) "$(GB $b) de $(GB $total) liberados$(if ($cuenta) { "  $([char]0x00B7)  $cuenta" })"
+    }
+    return [int]$t.Result
+}
+
 function ArchivarLista {
     $j = [IO.File]::ReadAllText($Archivar) | ConvertFrom-Json
     Remove-Item -LiteralPath $Archivar -Force -ErrorAction SilentlyContinue
@@ -343,8 +404,8 @@ function ArchivarLista {
                 if (Test-Path -LiteralPath $dst) { $dst += "_" + (Get-Date -Format "yyyyMMdd_HHmm") }
                 Move-Item -LiteralPath $copiaPlan -Destination $dst -ErrorAction Stop
             } catch { $fallos += "$ruta (no se pudo apartar su copia en _ARCHIVO: no se ha borrado)"; continue }
-            try { Remove-Item -LiteralPath $ruta -Recurse -Force -ErrorAction Stop }
-            catch { $fallos += "$ruta (su copia está en _ARCHIVO, pero no se pudo borrar del PC: ¿algún archivo abierto?)"; continue }
+            if ((BorrarConProgreso $ruta (Split-Path $ruta -Leaf) 0 ([double]$it.Bytes) "$n de $($items.Count)") -or (Test-Path -LiteralPath $ruta)) {
+                $fallos += "$ruta (su copia está en _ARCHIVO, pero quedaron archivos en el PC: ¿alguno abierto?)"; continue }
             $hechos += $it
             $rep = LeerReparto; foreach ($k in @($rep.Keys)) { if (DentroDe $k $ruta) { [void]$rep.Remove($k) } }; GuardarReparto $rep
             [pscustomobject]@{ Fecha = (Get-Date -Format "yyyy-MM-dd"); Original = $ruta; Guardado_en = $dst; GB = [math]::Round([int64]$it.Bytes / 1GB, 2) } |
@@ -362,8 +423,8 @@ function ArchivarLista {
         if ($script:detener) { break }
         # Comprobacion: el codigo 1 (o mas de 8) significa que aun faltaria copiar algo; entonces no se borra
         if ($c -ge 8 -or ($v -band 1) -or $v -ge 8) { $fallos += "$ruta (la copia no se pudo completar o no coincide: no se ha borrado)"; continue }
-        try { Remove-Item -LiteralPath $ruta -Recurse -Force -ErrorAction Stop }
-        catch { $fallos += "$ruta (copiada, pero no se pudo borrar del PC: ¿algún archivo abierto?)"; continue }
+        if ((BorrarConProgreso $ruta (Split-Path $ruta -Leaf) 0 ([double]$it.Bytes) "$n de $($items.Count)") -or (Test-Path -LiteralPath $ruta)) {
+            $fallos += "$ruta (copiada, pero quedaron archivos en el PC: ¿alguno abierto?)"; continue }
         $hechos += $it
         $rep = LeerReparto; foreach ($k in @($rep.Keys)) { if (DentroDe $k $ruta) { [void]$rep.Remove($k) } }; GuardarReparto $rep
         [pscustomobject]@{ Fecha = (Get-Date -Format "yyyy-MM-dd"); Original = $ruta; Guardado_en = $dst; GB = [math]::Round([int64]$it.Bytes / 1GB, 2) } |
@@ -377,6 +438,76 @@ function ArchivarLista {
     [void](Aviso $(if ($fallos) { "Terminado con avisos" } else { "Terminado" }) $txt)
 }
 if ($Archivar) { ArchivarLista; exit }
+
+# ---------- Liberar espacio: borra lo elegido en esa pantalla, sin bloquear la ventana principal ----------
+function LiberarLista {
+    $j = [IO.File]::ReadAllText($Liberar) | ConvertFrom-Json
+    Remove-Item -LiteralPath $Liberar -Force -ErrorAction SilentlyContinue
+    $items = @($j.Items); $definitivo = [bool]$j.Definitivo
+    $total = [double](($items | ForEach-Object { [int64]$_.Bytes } | Measure-Object -Sum).Sum)
+    AbrirProgreso
+    Progreso "Liberando espacio" "Preparando..." 0
+    $base = 0.0; $n = 0; $fallos = @(); $hechos = @()
+    Add-Type -AssemblyName Microsoft.VisualBasic
+    foreach ($it in $items) {
+        if ($script:detener) { break }
+        $n++; $cuenta = "$n de $($items.Count)"
+        Progreso $null "$($it.Titulo)" ($base / [math]::Max(1.0, $total)) "$(GB $base) de $(GB $total) liberados  $([char]0x00B7)  $cuenta"
+        if ($it.Tipo -eq 'papelera') {
+            foreach ($le in @($it.Letras)) { if ($le) { try { Clear-RecycleBin -DriveLetter "$le".Substring(0, 1) -Force -ErrorAction Stop } catch { $fallos += "Papelera de $le" } } }
+            $hechos += $it
+        } elseif ($it.Tipo -eq 'copiado') {
+            # Ya copiada: se comprueba que la copia del disco es identica, se aparta en _ARCHIVO (asi la proxima copia
+            # no la quita) y solo entonces se borra del PC
+            $src = "$($it.Rutas[0])"
+            $d = DiscosConectados | Where-Object { $_.Id -eq $it.Disco } | Select-Object -First 1
+            if (-not $d) { $fallos += "$src (conecta «$($it.DiscoNombre)» para comprobar su copia)"; $base += [int64]$it.Bytes; continue }
+            $dst = Join-Path $d.Raiz $it.Destino
+            if (-not (Test-Path -LiteralPath $dst)) { $fallos += "$src (no se encuentra su copia en «$($d.Nombre)»)"; $base += [int64]$it.Bytes; continue }
+            Progreso $null "$($it.Titulo)  $([char]0x00B7)  comprobando que la copia es idéntica..." ($base / [math]::Max(1.0, $total)) "$(GB $base) de $(GB $total) liberados  $([char]0x00B7)  $cuenta"
+            $v = Robo (@($src, $dst, '/XD') + $Excluir + @('/MIR', '/L', '/FFT', '/XJ', '/R:0', '/W:0', '/NJH', '/NJS', '/NFL', '/NDL'))
+            if ($script:detener) { break }
+            if ($v -ne 0) { $fallos += "$src (su copia no es idéntica: haz una copia y vuelve a intentarlo)"; $base += [int64]$it.Bytes; continue }
+            try {
+                $arch = Join-Path $d.Raiz (Join-Path "_ARCHIVO" $it.Destino)
+                New-Item -ItemType Directory -Path (Split-Path $arch -Parent) -Force | Out-Null
+                if (Test-Path -LiteralPath $arch) { $arch += "_" + (Get-Date -Format "yyyyMMdd_HHmm") }
+                Move-Item -LiteralPath $dst -Destination $arch -ErrorAction Stop
+            } catch { $fallos += "$src (no se pudo apartar su copia en _ARCHIVO: no se ha borrado)"; $base += [int64]$it.Bytes; continue }
+            [pscustomobject]@{ Fecha = (Get-Date -Format "yyyy-MM-dd"); Original = $src; Guardado_en = $arch; GB = [math]::Round([int64]$it.Bytes / 1GB, 2) } |
+                Export-Csv -Path (Join-Path $d.Raiz "_ARCHIVO\indice_archivo.csv") -Append -NoTypeInformation -Encoding UTF8 -Delimiter ';'
+            $rep = LeerReparto; foreach ($k in @($rep.Keys)) { if (DentroDe $k $src) { [void]$rep.Remove($k) } }; GuardarReparto $rep
+            $e = BorrarConProgreso $src $it.Titulo $base $total $cuenta
+            if ($e -or (Test-Path -LiteralPath $src)) { $fallos += "$src (su copia está a salvo en _ARCHIVO, pero quedaron archivos en el PC: ¿alguno abierto?)" } else { $hechos += $it }
+        } elseif ($it.Regen -or $definitivo) {
+            # Lo que se regenera solo (temporales, caches, node_modules...) se borra del todo: a la papelera no liberaria nada
+            $e = 0; foreach ($r in @($it.Rutas)) { if ($script:detener) { break }; $e += BorrarConProgreso "$r" $it.Titulo $base $total $cuenta }
+            if ($e) { $fallos += "$($it.Titulo): $e elementos en uso o sin permiso" } else { $hechos += $it }
+        } else {
+            # Descargas: a la papelera, para poder recuperarlo
+            $e = 0
+            foreach ($r in @($it.Rutas)) {
+                if ($script:detener) { break }
+                Bombear
+                try {
+                    if (Test-Path -LiteralPath "$r" -PathType Container) { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory("$r", 'OnlyErrorDialogs', 'SendToRecycleBin') }
+                    elseif (Test-Path -LiteralPath "$r") { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile("$r", 'OnlyErrorDialogs', 'SendToRecycleBin') }
+                } catch { $e++ }
+            }
+            if ($e) { $fallos += "$($it.Titulo): $e elementos en uso o sin permiso" } else { $hechos += $it }
+        }
+        $base += [int64]$it.Bytes
+    }
+    CerrarProgreso
+    $txt = "Has liberado $(GB (($hechos | ForEach-Object { [int64]$_.Bytes } | Measure-Object -Sum).Sum))."   # lo borrado (el espacio libre del disco cambia tambien por otros programas)
+    if ($hechos) { $txt += "`n`n" + (($hechos | ForEach-Object { "$([char]0x2022) $($_.Titulo) ($(GB ([int64]$_.Bytes)))" }) -join "`n") }
+    if (@($hechos | Where-Object { $_.Tipo -eq 'copiado' })) { $txt += "`n`nLas carpetas borradas del PC siguen en su disco de backup, en BACKUP\_ARCHIVO." }
+    if (-not $definitivo -and @($hechos | Where-Object { $_.Tipo -ne 'copiado' -and -not $_.Regen -and $_.Tipo -ne 'papelera' })) { $txt += "`n`nLo de Descargas está en la papelera: ese espacio se libera del todo cuando la vacíes." }
+    if ($script:detener) { $txt += "`n`nLo detuviste: lo que faltaba sigue en tu PC." }
+    if ($fallos) { $txt += "`n`nNo se pudo borrar todo:`n" + (($fallos | ForEach-Object { "$([char]0x2022) $_" }) -join "`n") }
+    [void](Aviso $(if ($script:detener) { "Liberar espacio: detenido" } elseif ($fallos) { "Espacio liberado, con avisos" } else { "Espacio liberado" }) $txt)
+}
+if ($Liberar) { LiberarLista; exit }
 
 # 1) Hay carpetas y discos registrados?
 if (-not $Carpetas) {
