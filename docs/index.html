@@ -109,6 +109,9 @@ section.alt .card{background:var(--bg)}
 .card h3{margin:0 0 6px;font-size:17px}
 .card p{margin:0;color:var(--muted);font-size:15px}
 
+.video{margin:0 auto 40px;max-width:960px}
+.video video{display:block;width:100%;aspect-ratio:16/9;border-radius:16px;box-shadow:var(--shadow);background:#0d1726;cursor:pointer}
+@media (max-width:600px){.video{max-width:340px}.video video{aspect-ratio:9/16}}
 .steps{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;counter-reset:s}
 @media (max-width:920px){.steps{grid-template-columns:repeat(2,1fr)}}
 @media (max-width:600px){.steps{grid-template-columns:1fr}}
@@ -272,6 +275,9 @@ footer a{color:var(--muted)}
     <div class="kicker">Cómo funciona</div>
     <h2>Lo configuras una vez y te olvidas</h2>
     <p class="intro">Vive como un pequeño escudo en la bandeja de Windows y te avisa cuando toca hacer copia.</p>
+    <div class="video">
+      <video id="promo" muted loop playsinline preload="metadata" poster="promo.jpg" aria-label="Vídeo: cómo funciona BackupApp en tres pasos"></video>
+    </div>
     <div class="steps">
       <div class="step"><h3>Instala</h3><p>Descarga el instalador y ejecútalo. No pide permisos de administrador.</p></div>
       <div class="step"><h3>Elige tus carpetas</h3><p>El asistente te propone las habituales y las que más ocupan, con su tamaño.</p></div>
@@ -395,6 +401,21 @@ footer a{color:var(--muted)}
       document.getElementById('dlmeta').textContent = 'Versión ' + v + ' · ' + mb + ' MB · publicada el ' + f + ' · no necesita permisos de administrador';
     })
     .catch(function(){});
+})();
+
+// Vídeo: vertical en móvil, horizontal en el resto; se reproduce al verlo en pantalla
+(function(){
+  var v = document.getElementById('promo');
+  var movil = matchMedia('(max-width:600px)').matches;
+  v.poster = movil ? 'promo_vertical.jpg' : 'promo.jpg';
+  v.src = movil ? 'promo_vertical.mp4' : 'promo.mp4';
+  if(matchMedia('(prefers-reduced-motion: reduce)').matches){ v.controls = true; return; }
+  v.addEventListener('click', function(){ v.paused ? v.play() : v.pause(); });
+  if('IntersectionObserver' in window){
+    new IntersectionObserver(function(es){
+      es.forEach(function(e){ e.isIntersecting ? v.play().catch(function(){}) : v.pause(); });
+    }, {threshold:.4}).observe(v);
+  } else { v.autoplay = true; }
 })();
 
 // Formulario de contacto (FormSubmit envía el mensaje por correo)
