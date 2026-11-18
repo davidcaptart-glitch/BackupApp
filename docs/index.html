@@ -363,8 +363,7 @@ footer a{color:var(--muted)}
 
 // Formulario de contacto (FormSubmit envía el mensaje por correo)
 (function(){
-  // Cuando tengas el código aleatorio de FormSubmit, ponlo aquí en lugar de esta línea: var DESTINO = 'tu_codigo';
-  var DESTINO = ['moc.liamg', 'tratpac.div.ad'].map(function(x){ return x.split('').reverse().join(''); }).reverse().join('@');
+  var DESTINO = 'da34c382ff3aa01dd5fcaa4dfa1d2c6b'; // código de FormSubmit (no expone el correo)
   var form = document.getElementById('form'), msg = document.getElementById('msg'), btn = document.getElementById('enviar');
   function aviso(t, ok){ msg.textContent = t; msg.className = 'msg ' + (ok ? 'ok' : 'err'); }
   form.addEventListener('submit', function(e){
